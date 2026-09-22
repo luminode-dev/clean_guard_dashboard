@@ -1,0 +1,33 @@
+{
+  "dashboard_user": "admin",
+  "dashboard_pass": "여기에-대시보드-비밀번호",
+  "public_base": "https://cleanguard.duckdns.org",
+  "live_base": "https://live.cleanguard.duckdns.org",
+  "live_protocol": "webrtc",
+  "max_events": 1000,
+  "sites": [
+    {
+      "site_id": "SITE-GN-0001",
+      "name": "현장 1 (site01)",
+      "address": "",
+      "location": null,
+      "region": {
+        "sido": "",
+        "sigungu": "",
+        "dong": "",
+        "code": ""
+      }
+    }
+  ],
+  "devices": [
+    {
+      "device_id": "JT-GN-0001",
+      "site_id": "SITE-GN-0001",
+      "name": "젯슨 1호기 (jetson01 · cam1)",
+      "stream": "site01_cam1",
+      "hw": {
+        "model": "Jetson Orin Nano 8GB"
+      }
+    }
+  ]
+}

@@ -1,8 +1,12 @@
 import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js';
 import {LivePlayer} from './live.js';
 import {createDemoApi} from './demo-api.js';
+import {createServerApi} from './server-api.js';
+import {connectEvents} from './realtime.js';
+const config=window.CLEAN_GUARD_CONFIG||{};
 const demo=createDemoApi({storage:window.localStorage});
-const api=demo.request;
+const serverApi=createServerApi({config,storage:window.localStorage});
+let api=demo.request,serverMode=false,realtime=null,realtimeState='off';
 
 let page='overview',context={},sites=[],devices=[],leafletMap=null,livePlayer=null,thumbnailTimer=null,refreshTimer=null,loadSerial=0;
 let eventFilters={},eventPage=1,deviceFilters={q:'',status:''},alertFilter='active';
@@ -11,7 +15,9 @@ const content=$('#page-content'),dialog=$('#detail-dialog');
 
 const send=(url,data)=>api(url,{method:'POST',...(data?{body:JSON.stringify(data)}:{})});
 function toast(message){const el=$('#toast');el.textContent=message;el.hidden=false;setTimeout(()=>el.hidden=true,3600);}
-function fail(error){const el=$('#global-error');el.textContent=error.message;el.hidden=false;$('#connection').textContent='시연 데이터 오류';}
+function fail(error){const el=$('#global-error');el.textContent=error.message;el.hidden=false;$('#connection').innerHTML='<i class="off"></i>'+(serverMode?'서버 응답 오류':'시연 데이터 오류');}
+function connectionLabel(){if(!serverMode)return '로컬 시연 모드';return '서버 연결 · '+serverApi.host(window.location)+(realtimeState==='open'?' · 실시간 수신 중':config.wsPath?' · 실시간 재접속 중':'');}
+function showConnection(){$('#connection').innerHTML='<i></i>'+connectionLabel();}
 const query=p=>new URLSearchParams(Object.entries(p).filter(([,v])=>v!==''&&v!=null)).toString();
 function options(items,value='',all='전체 지점'){return `<option value="">${all}</option>`+items.map(s=>`<option value="${esc(s.site_id)}" ${value===s.site_id?'selected':''}>${esc(s.name)}</option>`).join('');}
 function stateOptions(value,device=false){return `<option value="">전체 상태</option>`+(device?['online','degraded','offline','maintenance']:['new','reviewing','confirmed','actioned','dismissed']).map(s=>`<option value="${s}" ${value===s?'selected':''}>${labels[s]}</option>`).join('');}
@@ -32,7 +38,7 @@ async function load(){
   if(page==='stats')await renderStats(serial);
   if(page==='alerts')await renderAlerts(serial);
   if(serial!==loadSerial)return;
-  hydrateIcons();$('#connection').innerHTML='<i></i>로컬 시연 모드';$('#last-updated').textContent='마지막 조회 '+new Date().toLocaleTimeString('ko-KR',{hour12:false});
+  hydrateIcons();showConnection();$('#last-updated').textContent='마지막 조회 '+new Date().toLocaleTimeString('ko-KR',{hour12:false});
  }catch(e){if(serial===loadSerial)fail(e);}
 }
 async function renderOverview(o,serial){
@@ -93,7 +99,7 @@ async function openEvent(id){
  try{
  const e=await api('/api/events/'+encodeURIComponent(id));const review=e.review,d=e.detection,allowed={new:['reviewing','dismissed'],reviewing:['confirmed','dismissed'],confirmed:['actioned']}[review.state]||[];
  const snapshot=e.media?.snapshot;
- showDialog(e.site?.name||e.site_id,'EVENT DETAIL',`<div class="detail-grid"><div><div class="evidence">${snapshot?`<img src="${esc(snapshot)}" alt="모자이크 처리된 사건 증거">`:icon('camera')+'<p>증거 이미지가 아직 수신되지 않았습니다.</p>'}</div><p class="evidence-caption">${context.demo?'시연 사건 · ':''}모자이크 자료 기본 표시 · 원본 해상도 ${esc(d.frame_size?.join(' × ')||'미수신')}</p>${e.media?.clip?`<video controls preload="none" style="width:100%" src="${esc(e.media.clip)}"></video>`:''}<dl class="detail-facts"><dt>사건 ID</dt><dd>${esc(e.event_id)}</dd><dt>발생 시각</dt><dd>${esc(fmtDate(e.ts,true))}</dd><dt>서버 수신</dt><dd>${esc(fmtDate(e.received_at,true))}</dd><dt>장치</dt><dd>${esc(e.device_id)}</dd><dt>탐지 정보</dt><dd>${esc(d.class)} · ${d.night?esc(d.night):esc(d.color||'색상 없음')} · ${(d.conf*100).toFixed(0)}%</dd><dt>방송</dt><dd>${e.announce?.played?'방송 완료':'방송 미실시'}</dd><dt>회수 여부</dt><dd>${e.outcome?.retrieved?'회수 보고됨':'회수 보고 없음'}</dd></dl>${context.investigator?'<button class="button" id="raw-button">원본 자료 열람 · 이력 기록</button>':''}<div class="detail-section"><h3>방송 문구</h3><p>${esc(e.announce?.phrase||'방송 문구가 기록되지 않았습니다.')}</p></div></div><div><div style="display:flex;justify-content:space-between;margin-bottom:18px"><h3>사건 처리</h3>${badge(review.state)}</div>${allowed.length?`<form id="review-form" class="review-form"><label>처리 상태<select name="state">${allowed.map(s=>`<option value="${s}">${labels[s]}</option>`).join('')}</select></label><label id="reason-field" hidden>제외 사유<select name="reason"><option value="false_positive">오탐</option><option value="authorized">허용된 배출</option><option value="duplicate">중복 사건</option></select></label><div id="action-fields" ${allowed[0]==='actioned'?'':'hidden'}><label>조치 유형<select name="action_type"><option value="field_visit">현장 방문</option><option value="collection">수거</option><option value="fine">과태료</option><option value="other">기타</option></select></label><label>조치 결과<input name="action_result" maxlength="500" placeholder="예: 현장 수거 완료"></label><label style="display:flex;align-items:center;gap:6px"><input name="fine_issued" type="checkbox" style="width:auto">과태료 부과 기록</label></div><label>처리 메모<textarea name="note" maxlength="2000" placeholder="확인 내용 또는 현장 조치 내용을 입력하세요."></textarea></label><p id="review-error" class="error" role="alert"></p><button type="submit" class="primary">처리 내용 저장</button></form>`:`<div class="detail-section"><p>종결된 사건입니다.</p>${review.action?`<p>조치 결과: ${esc(review.action.result)}</p>`:''}${review.reason?`<p>제외 사유: ${esc({false_positive:'오탐',authorized:'허용된 배출',duplicate:'중복 사건'}[review.reason]||review.reason)}</p>`:''}</div>`}<div class="detail-section"><h3>처리 이력 <span class="muted">${review.history.length}</span></h3><div class="history">${review.history.length?review.history.slice().reverse().map(h=>`<div class="history-item">${esc(labels[h.from])} → <strong>${esc(labels[h.to])}</strong><small>${esc(h.by)} · ${esc(fmtDate(h.at))}</small>${h.note?`<p>${esc(h.note)}</p>`:''}</div>`).join(''):'<p class="muted">아직 처리 이력이 없습니다.</p>'}</div></div></div></div>`);
+ showDialog(e.site?.name||e.site_id,'EVENT DETAIL',`<div class="detail-grid"><div><div class="evidence">${snapshot?`<img src="${esc(snapshot)}" alt="모자이크 처리된 사건 증거">`:icon('camera')+'<p>증거 이미지가 아직 수신되지 않았습니다.</p>'}</div><p class="evidence-caption">${context.demo?'시연 사건 · ':''}모자이크 자료 기본 표시 · 원본 해상도 ${esc(d.frame_size?.join(' × ')||'미수신')}</p>${e.media?.clip?`<video controls preload="none" style="width:100%" src="${esc(e.media.clip)}"></video>`:''}<dl class="detail-facts"><dt>사건 ID</dt><dd>${esc(e.event_id)}</dd><dt>발생 시각</dt><dd>${esc(fmtDate(e.ts,true))}</dd><dt>서버 수신</dt><dd>${esc(fmtDate(e.received_at,true))}</dd><dt>장치</dt><dd>${esc(e.device_id)}</dd><dt>탐지 정보</dt><dd>${esc(d.class)} · ${d.night?esc(d.night):esc(d.color||'색상 없음')} · ${(d.conf*100).toFixed(0)}%</dd><dt>방송</dt><dd>${e.announce?.played?'방송 완료':'방송 미실시'+(e.announce?.suppressed_reason?' · '+esc(e.announce.suppressed_reason):'')}</dd><dt>회수 여부</dt><dd>${e.outcome?.retrieved?'회수 보고됨'+(e.outcome.retrieved_at?' · '+esc(fmtDate(e.outcome.retrieved_at)):''):'회수 보고 없음'}</dd>${e.suspect?`<dt>투기자 귀속</dt><dd>${e.suspect.owner_matched?'소지품 일치 (강한 귀속)':'추정'} · 객체 #${esc(e.suspect.obj_id??'-')}${e.suspect.owner_pid!=null?' · 인물 #'+esc(e.suspect.owner_pid):''}</dd>`:''}${e.review?.assignee?`<dt>담당자</dt><dd>${esc(e.review.assignee)}</dd>`:''}</dl>${context.investigator?'<button class="button" id="raw-button">원본 자료 열람 · 이력 기록</button>':''}<div class="detail-section"><h3>방송 문구</h3><p>${esc(e.announce?.phrase||'방송 문구가 기록되지 않았습니다.')}</p></div></div><div><div style="display:flex;justify-content:space-between;margin-bottom:18px"><h3>사건 처리</h3>${badge(review.state)}</div>${allowed.length?`<form id="review-form" class="review-form"><label>처리 상태<select name="state">${allowed.map(s=>`<option value="${s}">${labels[s]}</option>`).join('')}</select></label><label id="reason-field" hidden>제외 사유<select name="reason"><option value="false_positive">오탐</option><option value="authorized">허용된 배출</option><option value="duplicate">중복 사건</option></select></label><div id="action-fields" ${allowed[0]==='actioned'?'':'hidden'}><label>조치 유형<select name="action_type"><option value="field_visit">현장 방문</option><option value="collection">수거</option><option value="fine">과태료</option><option value="other">기타</option></select></label><label>조치 결과<input name="action_result" maxlength="500" placeholder="예: 현장 수거 완료"></label><label style="display:flex;align-items:center;gap:6px"><input name="fine_issued" type="checkbox" style="width:auto">과태료 부과 기록</label></div><label>처리 메모<textarea name="note" maxlength="2000" placeholder="확인 내용 또는 현장 조치 내용을 입력하세요."></textarea></label><p id="review-error" class="error" role="alert"></p><button type="submit" class="primary">처리 내용 저장</button></form>`:`<div class="detail-section"><p>종결된 사건입니다.</p>${review.action?`<p>조치 결과: ${esc(review.action.result)}</p>`:''}${review.reason?`<p>제외 사유: ${esc({false_positive:'오탐',authorized:'허용된 배출',duplicate:'중복 사건'}[review.reason]||review.reason)}</p>`:''}</div>`}<div class="detail-section"><h3>처리 이력 <span class="muted">${review.history.length}</span></h3><div class="history">${review.history.length?review.history.slice().reverse().map(h=>`<div class="history-item">${esc(labels[h.from])} → <strong>${esc(labels[h.to])}</strong><small>${esc(h.by)} · ${esc(fmtDate(h.at))}</small>${h.note?`<p>${esc(h.note)}</p>`:''}</div>`).join(''):'<p class="muted">아직 처리 이력이 없습니다.</p>'}</div></div></div></div>`);
  if(snapshot){const img=$('.evidence img');img.onerror=()=>img.parentElement.innerHTML=icon('camera')+'<p>보존 기간이 만료되었거나 자료를 불러올 수 없습니다.</p>';}
  if(allowed.length){const form=$('#review-form');form.elements.state.onchange=()=>{$('#reason-field').hidden=form.elements.state.value!=='dismissed';$('#action-fields').hidden=form.elements.state.value!=='actioned';};form.onsubmit=async ev=>{ev.preventDefault();const button=$('button[type="submit"]',form);button.disabled=true;const f=Object.fromEntries(new FormData(form));try{await send('/api/events/'+id+'/review',{state:f.state,reason:f.reason,note:f.note,version:e.version,action:{type:f.action_type,result:f.action_result,fine_issued:f.fine_issued==='on'}});toast('사건 처리 내용이 저장되었습니다.');await openEvent(id);await load();}catch(error){$('#review-error').textContent=error.message;}finally{button.disabled=false;}};}
  if(context.investigator)$('#raw-button').onclick=async()=>{try{const result=await api('/api/events/'+id+'/raw');window.open(result.url,'_blank','noopener');}catch(error){toast(error.message);}};
@@ -103,7 +109,7 @@ async function openDevice(id){
  try{
  const d=devices.find(d=>d.device_id===id);if(!d)return;
  const [s,uptime]=await Promise.all([api('/api/devices/'+id+'/stream'),api('/api/devices/'+id+'/uptime')]);const h=d.heartbeat;
- showDialog(d.site?.name||d.name,'DEVICE MONITORING',`<div class="detail-grid"><div><div class="evidence" id="device-evidence">${s.thumbnail?.url?`<img id="detail-thumb" src="${esc(s.thumbnail.url)}" alt="모자이크 썸네일">`:icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>'}</div><p class="evidence-caption" id="live-message">${s.live?'라이브 연결 가능 · 장치 상세에서만 연결합니다.':'미디어 서버 주소가 등록되지 않았습니다.'}</p>${s.live?'<button class="primary" id="start-live">라이브 영상 연결</button>':''}<div class="detail-section"><h3>설치 정보</h3><p>${esc(d.site?.address)}</p><p>${esc(d.hw?.model||'기기 정보 미등록')} · ${esc(d.device_id)}</p></div></div><div><div style="margin-bottom:20px">${badge(d.status)} ${context.demo&&d.demo?'<span class="demo-label">모의 하트비트</span>':''}</div><dl class="detail-facts"><dt>장치 시각</dt><dd>${fmtDate(d.last_heartbeat_at,true)}</dd><dt>서버 수신</dt><dd>${fmtDate(d.last_received_at,true)}</dd><dt>FPS</dt><dd>${h?.pipeline?.fps??'—'}</dd><dt>CPU / GPU</dt><dd>${h?.system?.cpu_pct??'—'}% / ${h?.system?.gpu_pct??'—'}%</dd><dt>GPU 온도</dt><dd>${h?.system?.temp_c?.gpu??'—'}°C</dd><dt>디스크 여유</dt><dd>${h?.system?.disk_free_mb??'—'} MB</dd><dt>방송 워커</dt><dd>${esc(h?.tts?.worker||'미수신')}</dd><dt>합성 지연</dt><dd>${h?.tts?.last_synth_ms??'—'} ms</dd><dt>관측 구간 정상률</dt><dd>${uptime.device_uptime_pct==null?'—':uptime.device_uptime_pct.toFixed(1)+'%'}<small class="cell-sub">오늘 ${Math.round(uptime.observed_seconds/60)}분 관측 · 미관측 구간 제외</small></dd><dt>이상 항목</dt><dd>${esc(h?.issues?.join(', ')||'없음')}</dd></dl><button id="maintenance-button" class="button">${d.maintenance?'점검 종료':'점검 모드로 전환'}</button><p class="footnote" style="padding:12px 0">점검 중에는 장치 장애 알림을 억제합니다.</p></div></div>`);
+ showDialog(d.site?.name||d.name,'DEVICE MONITORING',`<div class="detail-grid"><div><div class="evidence" id="device-evidence">${s.thumbnail?.url?`<img id="detail-thumb" src="${esc(s.thumbnail.url)}" alt="모자이크 썸네일">`:icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>'}</div><p class="evidence-caption" id="live-message">${s.live?'라이브 연결 가능 · '+esc(s.live.stream||'')+' ('+esc((s.live.protocol||'webrtc').toUpperCase())+') · 장치 상세에서만 연결합니다.':'미디어 서버 주소가 등록되지 않았습니다. config.js 의 live.base 와 장치 stream 을 확인하세요.'}</p>${s.live?'<button class="primary" id="start-live">라이브 영상 연결</button>':''}<div class="detail-section"><h3>설치 정보</h3><p>${esc(d.site?.address)}</p><p>${esc(d.hw?.model||'기기 정보 미등록')} · ${esc(d.device_id)}</p></div></div><div><div style="margin-bottom:20px">${badge(d.status)} ${context.demo&&d.demo?'<span class="demo-label">모의 하트비트</span>':''}</div><dl class="detail-facts"><dt>장치 시각</dt><dd>${fmtDate(d.last_heartbeat_at,true)}</dd><dt>서버 수신</dt><dd>${fmtDate(d.last_received_at,true)}</dd><dt>FPS</dt><dd>${h?.pipeline?.fps??'—'}</dd><dt>CPU / GPU</dt><dd>${h?.system?.cpu_pct??'—'}% / ${h?.system?.gpu_pct??'—'}%</dd><dt>GPU 온도</dt><dd>${h?.system?.temp_c?.gpu??'—'}°C</dd><dt>디스크 여유</dt><dd>${h?.system?.disk_free_mb??'—'} MB</dd><dt>방송 워커</dt><dd>${esc(h?.tts?.worker||'미수신')}</dd><dt>합성 지연</dt><dd>${h?.tts?.last_synth_ms??'—'} ms</dd><dt>관측 구간 정상률</dt><dd>${uptime.device_uptime_pct==null?'—':uptime.device_uptime_pct.toFixed(1)+'%'}<small class="cell-sub">오늘 ${Math.round(uptime.observed_seconds/60)}분 관측 · 미관측 구간 제외</small></dd><dt>이상 항목</dt><dd>${esc(h?.issues?.join(', ')||'없음')}</dd></dl><button id="maintenance-button" class="button">${d.maintenance?'점검 종료':'점검 모드로 전환'}</button><p class="footnote" style="padding:12px 0">점검 중에는 장치 장애 알림을 억제합니다.</p></div></div>`);
  $('#maintenance-button').onclick=async()=>{try{await send('/api/devices/'+id+'/maintenance',{enabled:!d.maintenance});toast('점검 상태가 변경되었습니다.');await load();await openDevice(id);}catch(e){toast(e.message);}};
  if(s.live)$('#start-live').onclick=()=>{$('#device-evidence').innerHTML='<video id="live-video" controls autoplay muted playsinline></video>';livePlayer=new LivePlayer($('#live-video'),$('#live-message'));livePlayer.start(s.live);$('#start-live').disabled=true;clearInterval(thumbnailTimer);};
  const img=$('#detail-thumb');if(img)img.onerror=()=>{img.parentElement.innerHTML=icon('camera')+'<p>썸네일을 불러올 수 없습니다.</p>';};
@@ -118,7 +124,7 @@ function registration(kind){
 function navigate(){const target=location.hash.slice(1)||'overview';page=Object.hasOwn(descriptions,target)?target:'overview';const [eyebrow,title,description]=descriptions[page];$('#page-eyebrow').textContent=eyebrow;$('#page-title').textContent=title;$('#breadcrumb-title').textContent=title;$('#page-description').textContent=description;document.title='Clean Guard · '+title;document.querySelectorAll('nav [data-page]').forEach(a=>a.classList.toggle('active',a.dataset.page===page));content.innerHTML='<div class="loading">관제 데이터를 불러오고 있습니다…</div>';load();}
 document.addEventListener('click',async e=>{
  const csv=e.target.closest('a[href*="api/events.csv?"]');
- if(csv){e.preventDefault();try{const data=await api('/api/events.csv'+new URL(csv.href).search);const url=URL.createObjectURL(new Blob([data],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='clean-guard-demo-events.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){toast(error.message);}return;}
+ if(csv){e.preventDefault();try{const data=await api('/api/events.csv'+new URL(csv.href).search);const url=URL.createObjectURL(new Blob([data],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=serverMode?'clean-guard-events.csv':'clean-guard-demo-events.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){toast(error.message);}return;}
 
  const event=e.target.closest('[data-event]');if(event){openEvent(event.dataset.event);return;}
  const device=e.target.closest('[data-device]');if(device){openDevice(device.dataset.device);return;}
@@ -126,7 +132,50 @@ document.addEventListener('click',async e=>{
 });
 $('#close-dialog').onclick=closeDialog;dialog.addEventListener('close',stopLive);dialog.addEventListener('cancel',stopLive);$('#refresh').onclick=load;$('#top-alerts').onclick=()=>location.hash='alerts';window.addEventListener('hashchange',navigate);window.addEventListener('pagehide',stopLive);
 $('#today').textContent=new Date().toLocaleDateString('ko-KR',{timeZone:'Asia/Seoul',year:'numeric',month:'long',day:'numeric',weekday:'short'});hydrateIcons();
-try{context=await api('/api/context');$('#user-name').textContent=context.user;$('#demo-label').hidden=!context.demo;navigate();refreshTimer=setInterval(()=>{if(!document.hidden&&!dialog.open&&page==='overview')load();},30000);setInterval(()=>{if(!document.hidden&&!dialog.open)refreshThumbnails();},5000);}catch(e){fail(e);}
+async function chooseMode(){
+ const mode=config.mode||'auto';
+ if(mode==='demo')return false;
+ if(mode==='server')return true;
+ const probe=await serverApi.probe();
+ if(!probe.ok)console.info('Clean Guard: 서버 응답이 없어 시연 데이터로 실행합니다. '+(probe.reason||''));
+ return probe.ok;
+}
+// jetson_data.md 기준 WebSocket 메시지 분류: 사건(§4.1) · 회수 후속(§4.2 event_update) · 하트비트(§3) · 알림(§6) · 트랙(§5.3)
+function classifyMessage(data){
+ if(!data||typeof data!=='object')return null;
+ const body=data.type&&data.data&&typeof data.data==='object'?data.data:data;
+ if(body.update||data.type==='event_update')return {kind:'update',body};
+ if(body.alert_id||data.type==='alert')return {kind:'alert',body};
+ if(body.pipeline||body.uptime_s!=null||data.type==='heartbeat')return {kind:'heartbeat',body};
+ if(Array.isArray(body.persons)||Array.isArray(body.objects))return {kind:'track',body};
+ if(body.event_id||body.detection||body.class||body.label||data.type==='event')return {kind:'event',body};
+ return null;
+}
+function startRealtime(){
+ const url=serverApi.wsUrl(window.location);if(!url)return;
+ let timer=null;
+ const reload=(delay=800)=>{clearTimeout(timer);timer=setTimeout(()=>{if(!dialog.open)load();},delay);};
+ realtime=connectEvents({url,onStatus:state=>{realtimeState=state;showConnection();},onEvent:data=>{
+  const message=classifyMessage(data);if(!message)return;
+  const {kind,body}=message;
+  if(kind==='track')return;
+  serverApi.invalidate();
+  if(kind==='event'){const cls=body.detection?.class||body.class||body.label;toast(cls?'새 사건 수신 · '+cls:'새 사건이 수신되었습니다.');reload();}
+  else if(kind==='update'){if(body.update==='retrieved')toast('회수 보고 · '+(body.event_id||''));reload();}
+  else if(kind==='alert'){toast((body.summary||body.title||'새 알림')+'');reload();}
+  else if(kind==='heartbeat'){reload(5000);}
+ }});
+ window.addEventListener('pagehide',()=>realtime?.close());
+}
+try{
+ serverMode=await chooseMode();
+ api=serverMode?serverApi.request:demo.request;
+ document.body.classList.toggle('server-mode',serverMode);
+ $('#reset-demo').hidden=serverMode;$('#user-role').textContent=serverMode?'운영 서버 연결':'프런트엔드 시연';
+ context=await api('/api/context');$('#user-name').textContent=context.user||'관제 운영자';$('#demo-label').hidden=!context.demo;navigate();
+ if(serverMode)startRealtime();
+ refreshTimer=setInterval(()=>{if(!document.hidden&&!dialog.open&&page==='overview')load();},30000);setInterval(()=>{if(!document.hidden&&!dialog.open)refreshThumbnails();},5000);
+}catch(e){fail(e);}
 
 $('#reset-demo').onclick=()=>{if(window.confirm('이 브라우저의 시연 변경 내용을 초기화할까요?')){demo.reset();closeDialog();load();toast('시연 데이터를 초기화했습니다.');}};
 $('.skip-link').onclick=e=>{e.preventDefault();$('#main').focus();};

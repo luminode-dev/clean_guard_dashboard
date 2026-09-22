@@ -1,0 +1,59 @@
+# C:\server\mediamtx\mediamtx.yml 예시 · MediaMTX v1.21 키 이름 기준 (ip주소.md 2026-09-22)
+# 지정하지 않은 항목은 배포판 기본값(mediamtx.default.yml)이 적용됩니다.
+# 비밀번호는 실제 값으로 바꾸고 이 저장소에는 커밋하지 마세요 (서버에서는 accounts.txt 에 별도 보관).
+
+logLevel: info
+logDestinations: [stdout, file]
+logFile: C:\server\mediamtx\mediamtx.log
+
+# 젯슨 → 서버 영상 push (공유기 UDP 8890 포워딩)
+srt: yes
+srtAddress: :8890
+
+# 브라우저 WebRTC 뷰어 · Caddy 가 live.cleanguard.duckdns.org → 127.0.0.1:8889 로 프록시, 미디어는 UDP 8189 직접
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]                 # 대시보드(cleanguard.duckdns.org)가 다른 출처에서 WHEP 호출
+webrtcTrustedProxies: ["127.0.0.1", "::1"]  # Caddy 를 신뢰해 실제 클라이언트 IP 인식
+webrtcLocalUDPAddress: :8189              # 공유기 UDP 8189 포워딩
+webrtcIPsFromInterfaces: yes
+webrtcAdditionalHosts: ["cleanguard.duckdns.org"]   # 필요하면 현재 공인 IP 를 추가 (유동 IP 라 바뀌면 갱신)
+
+# HLS 폴백 (config.js live.protocol: 'hls' 일 때만) · 외부 미노출
+hls: yes
+hlsAddress: 127.0.0.1:8888
+hlsAllowOrigins: ["*"]
+
+# 내부용 · 외부 미노출
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+moq: no
+rtmp: no
+api: yes
+apiAddress: 127.0.0.1:9997
+
+authMethod: internal
+authInternalUsers:
+  # 젯슨 송출: srt://cleanguard.duckdns.org:8890?streamid=publish:site01_cam1:jetson01:송출비번&pkt_size=1316&latency=200000
+  - user: jetson01
+    pass: 송출비번
+    permissions:
+      - action: publish
+        path: site01_cam1
+  # 대시보드 시청 (config.js live.user / live.pass 또는 영상 연결 시 입력)
+  - user: viewer
+    pass: 뷰어비번
+    permissions:
+      - action: read
+        path: site01_cam1
+  # 로컬 API/메트릭
+  - user: any
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: api
+      - action: metrics
+
+paths:
+  site01_cam1:
+    source: publisher

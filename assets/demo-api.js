@@ -1,7 +1,7 @@
 const KEY='clean-guard-ui-demo-v1';
 const copy=v=>structuredClone(v);
-const day=v=>new Date(new Date(v).getTime()+32400000).toISOString().slice(0,10);
-const hour=v=>new Date(new Date(v).getTime()+32400000).getUTCHours();
+export const day=v=>new Date(new Date(v).getTime()+32400000).toISOString().slice(0,10);
+export const hour=v=>new Date(new Date(v).getTime()+32400000).getUTCHours();
 const confirmed=e=>['confirmed','actioned'].includes(e.review.state);
 function check(ok,message){if(!ok)throw new Error(message);}
 function seed(now){
@@ -19,7 +19,7 @@ function seed(now){
  const alerts=[{alert_id:'DEMO-ALERT-1',device_id:devices[6].device_id,type:'offline',severity:'critical',title:'장치 연결 끊김',message:'시연 장치의 하트비트가 수신되지 않았습니다.'},{alert_id:'DEMO-ALERT-2',device_id:devices[5].device_id,type:'degraded',severity:'warning',title:'추론 속도 저하',message:'시연 장치의 처리 속도를 확인하세요.'}].map(a=>({...a,kind:'device_'+a.type,summary:a.title,ts:now.toISOString(),created_at:now.toISOString(),acked:false,resolved:false}));
  return {schema:1,sites,devices,events,alerts};
 }
-function summary(items){
+export function summary(items){
  const c=items.filter(confirmed),retrieved=c.filter(e=>e.outcome.retrieved).length;
  const by_hour=Array(24).fill(0),by_class={};
  for(const e of items){by_hour[hour(e.ts)]++;by_class[e.detection.class]=(by_class[e.detection.class]||0)+1;}
