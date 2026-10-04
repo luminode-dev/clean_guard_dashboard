@@ -68,3 +68,18 @@ test('server adapter passes ROI GET/PUT through and explains an old server',asyn
  const old=createServerApi({config:{},fetcher:async()=>response(404,{detail:'Not Found'})});
  await assert.rejects(()=>old.request('/api/devices/JT-GN-0001/roi'),/ROI 기능을 지원하지 않습니다/);
 });
+
+test('selfIntersects flags crossing edges and labelPoint stays inside the polygon',async()=>{
+ const {selfIntersects,labelPoint}=await import('../assets/roi-editor.js');
+ assert.equal(selfIntersects(square),false);
+ assert.equal(selfIntersects([[0,0],[1,1],[1,0],[0,1]]),true,'bow-tie');
+ // 운영에서 저장된 "바깥 테두리 + 안쪽" 제외 구역은 열쇠구멍 모양의 단순 다각형 (교차 아님)
+ const keyhole=[[0,0],[0.99,0],[1,1],[0.01,1],[0.93,0.5],[0.92,0.17],[0.04,0.49],[0,1]];
+ assert.equal(selfIntersects(keyhole),false);
+ assert.equal(pointInPolygon([0.5,0.1],keyhole),true,"road is excluded");
+ assert.equal(pointInPolygon([0.5,0.45],keyhole),false,"sidewalk is the hole");
+ const concave=[[0,0],[1,0],[1,1],[0.6,1],[0.6,0.3],[0.4,0.3],[0.4,1],[0,1]];
+ assert.equal(selfIntersects(concave),false);
+ assert.equal(pointInPolygon(labelPoint(concave),concave),true,'label inside a U-shape');
+ assert.equal(pointInPolygon(labelPoint(square),square),true);
+});

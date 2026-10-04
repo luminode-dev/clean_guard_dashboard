@@ -3,12 +3,13 @@ import {LivePlayer} from './live.js';
 import {createDemoApi} from './demo-api.js';
 import {createServerApi} from './server-api.js';
 import {connectEvents} from './realtime.js';
-import {RoiEditor,validateZones,ZONE_TYPES} from './roi-editor.js';
+import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js';
 const config=window.CLEAN_GUARD_CONFIG||{};
 const demo=createDemoApi({storage:window.localStorage});
 const serverApi=createServerApi({config,storage:window.localStorage});
 let api=demo.request,serverMode=false,realtime=null,realtimeState='off';
 
+let roiOverlay=null;
 let roiEditor=null,roiDoc=null,roiDeviceId=null,deviceDialogId=null,eventDialogId=null;
 let page='overview',context={},sites=[],devices=[],leafletMap=null,livePlayer=null,thumbnailTimer=null,refreshTimer=null,loadSerial=0;
 let eventFilters={},eventPage=1,deviceFilters={q:'',status:''},alertFilter='active';
@@ -95,7 +96,7 @@ async function renderAlerts(serial){
  content.querySelectorAll('[data-alert-filter]').forEach(b=>b.onclick=()=>{alertFilter=b.dataset.alertFilter;load();});
 }
 function showDialog(title,eyebrow,html){stopLive();$('#dialog-title').textContent=title;$('#dialog-eyebrow').textContent=eyebrow;$('#dialog-body').innerHTML=html;if(!dialog.open)dialog.showModal();}
-function stopLive(){roiEditor?.destroy();roiEditor=null;roiDoc=null;roiDeviceId=null;livePlayer?.close();livePlayer=null;clearInterval(thumbnailTimer);thumbnailTimer=null;}
+function stopLive(){roiOverlay=null;roiEditor?.destroy();roiEditor=null;roiDoc=null;roiDeviceId=null;livePlayer?.close();livePlayer=null;clearInterval(thumbnailTimer);thumbnailTimer=null;}
 function closeDialog(){stopLive();dialog.close();}
 // 투기 장면 클립: 서버가 SRT 순환 버퍼에서 사건 시각 앞뒤 5초를 잘라 붙인다 (보관 개수 초과 시 오래된 영상부터 삭제)
 function clipBlock(e){
@@ -134,12 +135,13 @@ async function openDevice(id){
 const roiStates={none:['maintenance','ROI 미설정 · 화면 전체 감시'],pending:['new','젯슨 전달 대기'],applied:['online','젯슨 적용됨'],failed:['offline','적용 실패']};
 function roiBadge(doc){const st=doc?.apply_state||'none',[cls,label]=roiStates[st]||roiStates.none;return `<span class="badge ${cls}"><i class="dot ${cls}"></i>${label}${doc?.version?' · v'+doc.version:''}</span>`;}
 function roiMedia(){return $('#live-video')||$('#detail-thumb')||$('#roi-blank');}
+function roiOverlayOn(){if(roiOverlay!=null)return roiOverlay;const onVideo=!!($('#live-video')||$('#detail-thumb'));return !(onVideo&&roiDoc?.apply_state==='applied');}
 function attachRoi(){
  const host=$('#device-evidence');if(!host||roiDoc==null)return;
  const editing=!!roiEditor?.editable,zones=roiEditor?roiEditor.zones:(roiDoc.zones||[]),dirty=roiEditor?.dirty,selected=roiEditor?.selected??null;
  roiEditor?.destroy();
  if(editing&&!$('#live-video')&&!$('#detail-thumb')&&!$('#roi-blank'))host.innerHTML='<div id="roi-blank" class="roi-blank"><span>영상 미연결 · 16:9 기준 화면에 그립니다</span></div>';
- roiEditor=new RoiEditor(host,roiMedia(),{zones,editable:editing,onChange:(ed,msg)=>{renderRoiToolbar();if(msg)toast(msg);}});
+ roiEditor=new RoiEditor(host,roiMedia(),{zones,editable:editing,visible:roiOverlayOn(),onChange:(ed,msg)=>{renderRoiToolbar();if(msg)toast(msg);}});
  roiEditor.dirty=!!dirty;roiEditor.selected=selected;roiEditor.draw();
 }
 function roiCounts(zones){return `감시 ${zones.filter(z=>z.type==='include').length}개 · 제외 ${zones.filter(z=>z.type==='exclude').length}개`;}
@@ -148,8 +150,9 @@ function renderRoiSection(){
  if(roiDoc==null){box.innerHTML='<h3>감시 구역 (ROI)</h3><p>서버가 ROI 기능을 지원하지 않습니다. 서버 app.py 를 업데이트하세요.</p>';return;}
  const editing=!!roiEditor?.editable,zones=roiDoc.zones||[];
  const summary=zones.length?roiCounts(zones)+(roiDoc.updated_by?' · '+esc(roiDoc.updated_by)+' '+esc(fmtDate(roiDoc.updated_at)):''):'구역이 없으면 화면 전체를 감시합니다.';
- box.innerHTML=`<div class="roi-head"><h3>감시 구역 (ROI)</h3><span id="roi-badge">${roiBadge(roiDoc)}</span></div>${roiDoc.apply_state==='failed'&&roiDoc.apply_error?`<p class="error">${esc(roiDoc.apply_error)}</p>`:''}<p class="roi-summary">${summary}</p><div id="roi-toolbar"></div>${editing?'':'<button class="button" id="roi-edit">ROI 편집</button>'}`;
+ box.innerHTML=`<div class="roi-head"><h3>감시 구역 (ROI)</h3><span id="roi-badge">${roiBadge(roiDoc)}</span></div>${roiDoc.apply_state==='failed'&&roiDoc.apply_error?`<p class="error">${esc(roiDoc.apply_error)}</p>`:''}<p class="roi-summary">${summary}</p>${!editing&&zones.some(z=>selfIntersects(z.points))?'<p class="roi-warn">선이 서로 교차하는 구역이 있습니다. 젯슨은 교차된 안쪽을 구멍(구역 아님)으로 판정합니다. ROI 편집에서 다시 그려 주세요.</p>':''}<div id="roi-toolbar"></div>${editing?'':`<div class="roi-tools"><button class="button" id="roi-edit">ROI 편집</button>${zones.length?`<button class="button" id="roi-overlay">${roiOverlayOn()?'구역 겹쳐 보기 끄기':'구역 겹쳐 보기'}</button>`:''}</div>${zones.length&&!roiOverlayOn()?'<p class="footnote roi-help">영상의 초록·빨간 선은 젯슨이 직접 그린, 지금 적용 중인 구역입니다.</p>':''}`}`;
  $('#roi-edit')?.addEventListener('click',()=>{attachRoi();roiEditor.setEditable(true);attachRoi();renderRoiSection();});
+ $('#roi-overlay')?.addEventListener('click',()=>{roiOverlay=!roiOverlayOn();roiEditor?.setVisible(roiOverlay);renderRoiSection();});
  renderRoiToolbar();
 }
 function renderRoiToolbar(){
@@ -160,7 +163,7 @@ function renderRoiToolbar(){
   ?`<span class="roi-hint">${ZONE_TYPES[ed.drawType]} 그리는 중 · 클릭으로 꼭짓점, 첫 점 클릭·더블클릭·Enter 로 완료, Esc 취소</span><button class="button" id="roi-close">완료</button><button class="button" id="roi-cancel-draw">취소</button>`
   :`<button class="button roi-include" id="roi-add-include">+ 감시 구역</button><button class="button roi-exclude" id="roi-add-exclude">+ 제외 구역</button><button class="button" id="roi-clear" ${ed.zones.length?'':'disabled'}>전체 삭제</button>`;
  const selected=sel&&!drawing?`<div class="roi-selected"><label>이름<input id="roi-name" maxlength="40" value="${esc(sel.name)}"></label><label>종류<select id="roi-type"><option value="include" ${sel.type==='include'?'selected':''}>감시 구역</option><option value="exclude" ${sel.type==='exclude'?'selected':''}>제외 구역</option></select></label><button class="button" id="roi-delete">구역 삭제</button></div>`:'';
- bar.innerHTML=`<div class="roi-tools">${tools}</div>${selected}<p class="footnote roi-help">${ed.zones.length?roiCounts(ed.zones)+' · ':''}구역을 클릭해 선택, 꼭짓점을 끌어 수정합니다. 제외 구역이 감시 구역보다 우선합니다.</p><div class="roi-actions"><button class="primary" id="roi-save" ${ed.dirty&&!drawing?'':'disabled'}>저장 후 젯슨에 전송</button><button class="button" id="roi-cancel">편집 취소</button></div>`;
+ bar.innerHTML=`<div class="roi-tools">${tools}</div>${selected}${ed.zones.some(z=>selfIntersects(z.points))?'<p class="roi-warn">선이 서로 교차하는 구역이 있습니다. 교차된 안쪽은 구멍으로 판정됩니다. 감시 구역 밖은 원래 무시되므로, 바깥 전체를 제외 구역으로 두를 필요는 없습니다.</p>':''}<p class="footnote roi-help">${ed.zones.length?roiCounts(ed.zones)+' · ':''}구역을 클릭해 선택, 꼭짓점을 끌어 수정합니다. 제외 구역이 감시 구역보다 우선합니다.${$('#live-video')||$('#detail-thumb')?' 영상에 보이는 얇은 실선은 젯슨이 현재 적용 중인 구역(v'+(roiDoc?.applied_version||0)+')이며, 저장 후 젯슨이 적용하면(최대 30초) 새 구역으로 바뀝니다.':''}</p><div class="roi-actions"><button class="primary" id="roi-save" ${ed.dirty&&!drawing?'':'disabled'}>저장 후 젯슨에 전송</button><button class="button" id="roi-cancel">편집 취소</button></div>`;
  $('#roi-add-include')?.addEventListener('click',()=>{ed.startDraw('include');renderRoiToolbar();});
  $('#roi-add-exclude')?.addEventListener('click',()=>{ed.startDraw('exclude');renderRoiToolbar();});
  $('#roi-close')?.addEventListener('click',()=>ed.closeDraft());
@@ -180,7 +183,7 @@ function renderRoiToolbar(){
   e.target.disabled=true;
   try{
    roiDoc=await api('/api/devices/'+encodeURIComponent(roiDeviceId)+'/roi',{method:'PUT',body:JSON.stringify(ed.payload(roiDoc.version||0))});
-   ed.setZones(roiDoc.zones||[]);ed.setEditable(false);
+   ed.setZones(roiDoc.zones||[]);ed.setEditable(false);roiOverlay=null;
    if($('#roi-blank'))$('#device-evidence').innerHTML=icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>';
    attachRoi();renderRoiSection();
    toast(serverMode?'ROI 를 저장했습니다. 다음 하트비트(최대 30초)에 젯슨으로 전달됩니다.':'ROI 를 저장했습니다 (시연 모드).');
@@ -194,7 +197,7 @@ async function refreshRoiState(deviceId){
  if(!dialog.open||roiDeviceId!==deviceId)return;
  try{
   const doc=await api('/api/devices/'+encodeURIComponent(deviceId)+'/roi'),was=roiDoc?.apply_state;roiDoc=doc;
-  if(roiEditor?.editable){const b=$('#roi-badge');if(b)b.innerHTML=roiBadge(doc);}else{roiEditor?.setZones(doc.zones||[]);renderRoiSection();}
+  if(roiEditor?.editable){const b=$('#roi-badge');if(b)b.innerHTML=roiBadge(doc);}else{roiEditor?.setZones(doc.zones||[]);roiEditor?.setVisible(roiOverlayOn());renderRoiSection();}
   if(doc.apply_state==='applied'&&was!=='applied')toast('젯슨에 ROI 가 적용되었습니다 · v'+doc.applied_version);
   if(doc.apply_state==='failed'&&was!=='failed')toast('젯슨 ROI 적용 실패 · '+(doc.apply_error||''));
  }catch{}
