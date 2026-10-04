@@ -55,6 +55,8 @@ DEFAULT_SETTINGS = {
     # 보존 규칙: 서버는 사건 증거(스냅샷·클립)만 저장하고 상시 녹화는 하지 않는다.
     # 사건 수가 max_events 를 넘으면 먼저 들어온 사건(received_at 순)부터 DB 행과 미디어 폴더를 함께 삭제한다.
     "max_events": 1000,
+    # 영상 클립은 용량이 커서 따로 상한을 둔다: max_clips 를 넘으면 오래된 사건의 clip.mp4 만 지운다 (사건·사진은 유지)
+    "clip": {"pre_s": 5, "post_s": 5, "max_clips": 500},
     "sites": [{"site_id": "SITE-GN-0001", "name": "현장 1 (site01)", "address": "", "location": None, "region": {"sido": "", "sigungu": "", "dong": "", "code": ""}}],
     "devices": [{"device_id": "JT-GN-0001", "site_id": "SITE-GN-0001", "name": "젯슨 1호기 (jetson01 · cam1)", "stream": "site01_cam1", "hw": {"model": "Jetson Orin Nano 8GB"}}],
 }
@@ -449,6 +451,7 @@ async def watchdog() -> None:
                                         "video": v.get("video"), "last_received_at": v.get("last_received_at"), "last_seen_s": v.get("last_seen_s")})
                     _last_device_state[r["device_id"]] = state
                 enforce_retention(conn)
+                enforce_clip_retention(conn)
         except Exception as e:  # noqa: BLE001
             print("watchdog error:", e)
         for c in changes:
@@ -508,6 +511,30 @@ def safe_id(v: str) -> str:
 
 def media_folder(e: dict) -> Path:
     return SNAP_DIR / kst_day(e["ts"]) / safe_id(e["event_id"])
+
+
+def enforce_clip_retention(conn) -> int:
+    """영상 클립이 max_clips 를 넘으면 먼저 들어온 사건부터 clip.mp4 만 지운다. 사건 기록과 사진은 남긴다."""
+    limit = int({**CLIP_DEFAULTS, **(SETTINGS.get("clip") or {})}.get("max_clips") or 0)
+    if limit <= 0:
+        return 0
+    rows = conn.execute("SELECT event_id, data FROM events WHERE json_extract(data,'$.media.clip') IS NOT NULL ORDER BY received_at ASC, ts ASC").fetchall()
+    excess = len(rows) - limit
+    if excess <= 0:
+        return 0
+    for r in rows[:excess]:
+        e = json.loads(r["data"])
+        clip_file = media_folder(e) / "clip.mp4"
+        try:
+            clip_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        m = e.setdefault("media", {})
+        m.update({"clip": None, "clip_status": "expired", "clip_note": f"영상 보관 개수({limit}개)를 넘어 오래된 영상부터 삭제되었습니다. 사진은 남아 있습니다."})
+        m.pop("clip_size", None)
+        save_event(conn, e)
+    print(f"clip retention: removed {excess} oldest clips (limit {limit})")
+    return excess
 
 
 def enforce_retention(conn) -> int:
@@ -587,7 +614,7 @@ def summarize(events: list[dict]) -> dict:
 # MediaMTX 가 site 경로를 최근 30분만 녹화(recordDeleteAfter)하고, 재생 서버(127.0.0.1:9996)가 임의 구간을 mp4 로 내준다.
 # 사건이 오면 사건 시각 기준 앞 pre_s ~ 뒤 post_s 를 잘라 사건 폴더의 clip.mp4 로 저장 → 이후 max_events 보존 규칙을 따른다.
 PLAYBACK_API = os.environ.get("MEDIAMTX_PLAYBACK", "http://127.0.0.1:9996")
-CLIP_DEFAULTS = {"pre_s": 10, "post_s": 10, "buffer_s": 1800, "skew_limit_s": 120}
+CLIP_DEFAULTS = {"pre_s": 5, "post_s": 5, "buffer_s": 1800, "skew_limit_s": 120, "max_clips": 500}
 _clip_tasks: set[asyncio.Task] = set()
 
 
@@ -690,6 +717,8 @@ async def make_clip(event_id: str) -> None:
                       clip_range=[iso(start), iso(end)], clip_size=len(data)) is None:
         shutil.rmtree(folder, ignore_errors=True)  # 기다리는 사이 사건이 보존 규칙으로 삭제됨
         return
+    with _db_lock, db() as conn:
+        enforce_clip_retention(conn)
     hub.publish("event_update", {"event_id": event_id, "update": "media", "clip_status": "ready", "media": {"clip": url}})
 
 

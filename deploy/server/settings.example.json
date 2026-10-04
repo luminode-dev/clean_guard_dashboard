@@ -5,6 +5,11 @@
   "live_base": "https://live.cleanguard.duckdns.org",
   "live_protocol": "webrtc",
   "max_events": 1000,
+  "clip": {
+    "pre_s": 5,
+    "post_s": 5,
+    "max_clips": 500
+  },
   "sites": [
     {
       "site_id": "SITE-GN-0001",

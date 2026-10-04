@@ -97,12 +97,12 @@ async function renderAlerts(serial){
 function showDialog(title,eyebrow,html){stopLive();$('#dialog-title').textContent=title;$('#dialog-eyebrow').textContent=eyebrow;$('#dialog-body').innerHTML=html;if(!dialog.open)dialog.showModal();}
 function stopLive(){roiEditor?.destroy();roiEditor=null;roiDoc=null;roiDeviceId=null;livePlayer?.close();livePlayer=null;clearInterval(thumbnailTimer);thumbnailTimer=null;}
 function closeDialog(){stopLive();dialog.close();}
-// 투기 장면 클립: 서버가 SRT 순환 버퍼에서 사건 시각 앞뒤 10초를 잘라 붙인다
+// 투기 장면 클립: 서버가 SRT 순환 버퍼에서 사건 시각 앞뒤 5초를 잘라 붙인다 (보관 개수 초과 시 오래된 영상부터 삭제)
 function clipBlock(e){
  const m=e.media||{};
  if(m.clip)return `<div class="clip-box"><h3>투기 장면 영상</h3><video controls preload="metadata" playsinline src="${esc(m.clip)}"></video><small class="cell-sub">${m.clip_range?esc(fmtDate(m.clip_range[0]))+' ~ '+esc(fmtDate(m.clip_range[1]))+' · ':''}${m.clip_source==='device'?'젯슨 업로드':'서버 영상에서 자동 추출'}${m.clip_note?' · '+esc(m.clip_note):''}</small></div>`;
- if(m.clip_status==='pending')return '<div class="clip-box pending"><h3>투기 장면 영상</h3><p>영상 클립을 만드는 중입니다 · 사건 발생 후 약 20초 뒤 자동으로 표시됩니다.</p></div>';
- if(m.clip_status==='missing')return `<div class="clip-box missing"><h3>투기 장면 영상</h3><p>${esc(m.clip_note||'영상 클립이 없습니다.')}</p></div>`;
+ if(m.clip_status==='pending')return '<div class="clip-box pending"><h3>투기 장면 영상</h3><p>영상 클립을 만드는 중입니다 · 사건 발생 후 약 10초 뒤 자동으로 표시됩니다.</p></div>';
+ if(m.clip_status==='missing'||m.clip_status==='expired')return `<div class="clip-box missing"><h3>투기 장면 영상</h3><p>${esc(m.clip_note||'영상 클립이 없습니다.')}</p></div>`;
  return '';
 }
 async function openEvent(id){
