@@ -33,6 +33,10 @@ rtmp: no
 api: yes
 apiAddress: 127.0.0.1:9997
 
+# 사건 클립 추출용 재생 서버 (FastAPI 만 사용, 외부 미노출)
+playback: yes
+playbackAddress: 127.0.0.1:9996
+
 authMethod: internal
 authInternalUsers:
   # 젯슨 송출: srt://cleanguard.duckdns.org:8890?streamid=publish:site01_cam1:jetson01:송출비번&pkt_size=1316&latency=200000
@@ -53,7 +57,15 @@ authInternalUsers:
     permissions:
       - action: api
       - action: metrics
+      - action: playback
 
 paths:
   site01_cam1:
     source: publisher
+    # 사건 클립용 순환 버퍼: 최근 30분만 1분 단위로 보관하고 계속 삭제 (720p 1.5 Mbps 기준 약 330 MB)
+    record: yes
+    recordPath: C:/server/mediamtx/buffer/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordFormat: fmp4
+    recordPartDuration: 1s
+    recordSegmentDuration: 1m
+    recordDeleteAfter: 30m

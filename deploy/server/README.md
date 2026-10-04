@@ -23,6 +23,18 @@
 
 대시보드에서 그린 감시·제외 구역(0~1 정규화 다각형)을 `device_config` 테이블에 버전과 함께 저장합니다. 하트비트 응답의 `config.roi_version` 으로 젯슨에 알리고, 젯슨은 `GET /api/device/config` 로 받아 `config/roi.json` 에 저장한 뒤 `POST /api/device/config/ack` 로 결과를 보고합니다. 저장 시 `base_version` 이 다르면 409(동시 편집 방지). 적용 상태(`none|pending|applied|failed`)는 `/ws/events` 의 `device_config` 메시지로 대시보드에 실시간 반영됩니다.
 
+## 사건 클립 (서버 자동 추출)
+
+젯슨은 클립을 만들거나 보관하지 않습니다. MediaMTX 가 SRT 로 들어오는 영상을 최근 30분만 순환 녹화하고(`recordDeleteAfter: 30m`), 사건이 들어오면 FastAPI 가 사건 시각 기준 앞 10초 ~ 뒤 10초를 로컬 재생 서버(`127.0.0.1:9996/get?format=mp4`)로 잘라 사건 폴더의 `clip.mp4` 로 저장합니다. 재인코딩이 없어 1~2초면 끝나며, 이후 `max_events` 보존 규칙을 따릅니다.
+
+- 상태: `media.clip_status` = `pending`(뒤 10초 대기) → `ready` | `missing`. 대시보드 사건 상세가 실시간으로 영상으로 바뀝니다.
+- 장치 시계가 서버 수신 시각과 120초 넘게 어긋나면 수신 시각 기준으로 자르고 `clip_note` 에 남깁니다.
+- 구간 일부만 영상이 있으면 `clip_note` 에 "요청 20초 중 N초만 영상" 으로 표시, 전혀 없으면 `missing`.
+- 사건이 30분 넘게 늦게 도착하면(오프라인 큐) 버퍼에서 이미 지워져 `missing`.
+- 젯슨이 `clip` 을 직접 올리면 그 파일을 우선합니다.
+- 설정: `settings.json` 의 `clip: {pre_s, post_s, buffer_s, skew_limit_s}` (기본 10, 10, 1800, 120).
+- 미디어 업로드 응답의 `files.{name}.size/sha256` 으로 젯슨이 업로드 성공을 검증한 뒤 로컬 파일을 지웁니다.
+
 ## 계약 요약
 
 장치(Bearer 토큰): `POST /api/events`, `POST /api/events/{id}/update`, `POST /api/events/{id}/media`(multipart), `POST /api/heartbeat`(응답에 `config.roi_version`), `PUT /api/devices/{id}/thumbnail`, `GET /api/device/config`, `POST /api/device/config/ack`

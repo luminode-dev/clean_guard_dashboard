@@ -17,8 +17,12 @@ import io
 import json
 import os
 import re
+import hashlib
 import secrets
 import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
@@ -482,7 +486,9 @@ def normalize_incoming_event(body: dict, device_id: str) -> dict:
                      "suppressed_reason": (body.get("announce") or {}).get("suppressed_reason")},
         "media": {"snapshot": media.get("snapshot") if str(media.get("snapshot", "")).startswith(("http", "/")) else None,
                   "snapshot_raw": None, "clip": media.get("clip") if str(media.get("clip", "")).startswith(("http", "/")) else None,
-                  "clip_range_s": media.get("clip_range_s"), "pending": {k: media.get(k) for k in ("snapshot", "snapshot_raw", "clip") if media.get(k)}},
+                  "clip_range_s": media.get("clip_range_s"), "pending": {k: media.get(k) for k in ("snapshot", "snapshot_raw", "clip") if media.get(k)},
+                  # 서버가 SRT 순환 버퍼에서 자동으로 자르는 클립 상태: pending → ready | missing
+                  "clip_status": "ready" if str(media.get("clip", "")).startswith(("http", "/")) else "pending", "clip_note": None},
         "debug": body.get("debug"),
         "review": {"state": "new", "assignee": None, "history": [], "reason": None, "action": None},
         "outcome": {"retrieved": False, "retrieved_at": None, "after_s": None, "object_last_seen_at": None},
@@ -577,12 +583,138 @@ def summarize(events: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------- 앱
+# ---------------------------------------------------------------- 사건 클립 (SRT 순환 버퍼에서 서버가 직접 잘라 저장)
+# MediaMTX 가 site 경로를 최근 30분만 녹화(recordDeleteAfter)하고, 재생 서버(127.0.0.1:9996)가 임의 구간을 mp4 로 내준다.
+# 사건이 오면 사건 시각 기준 앞 pre_s ~ 뒤 post_s 를 잘라 사건 폴더의 clip.mp4 로 저장 → 이후 max_events 보존 규칙을 따른다.
+PLAYBACK_API = os.environ.get("MEDIAMTX_PLAYBACK", "http://127.0.0.1:9996")
+CLIP_DEFAULTS = {"pre_s": 10, "post_s": 10, "buffer_s": 1800, "skew_limit_s": 120}
+_clip_tasks: set[asyncio.Task] = set()
+
+
+def clip_cfg() -> dict:
+    return {**CLIP_DEFAULTS, **(SETTINGS.get("clip") or {})}
+
+
+def clip_window(e: dict) -> tuple[datetime, datetime, str | None]:
+    """잘라낼 구간. 장치 시각이 서버 수신 시각과 크게 어긋나면(시계 미동기) 수신 시각 기준으로 보정한다."""
+    c = clip_cfg()
+    ts, recv = parse_ts(e["ts"]), parse_ts(e.get("received_at") or e["ts"])
+    note = None
+    anchor = ts
+    if abs((recv - ts).total_seconds()) > c["skew_limit_s"]:
+        anchor, note = recv - timedelta(seconds=2), "장치 시계가 어긋나 서버 수신 시각 기준으로 잘랐습니다."
+    return anchor - timedelta(seconds=c["pre_s"]), anchor + timedelta(seconds=c["post_s"]), note
+
+
+def set_clip_state(event_id: str, **fields) -> dict | None:
+    with _db_lock, db() as conn:
+        row = conn.execute("SELECT data FROM events WHERE event_id=?", (event_id,)).fetchone()
+        if not row:
+            return None  # 그 사이 보존 규칙으로 삭제됨
+        e = json.loads(row["data"])
+        e.setdefault("media", {}).update(fields)
+        save_event(conn, e)
+        return e
+
+
+def fetch_playback(stream: str, start: datetime, duration: float) -> tuple[int, bytes]:
+    q = urllib.parse.urlencode({"path": stream, "start": start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "duration": f"{duration:.1f}", "format": "mp4"})
+    try:
+        with urllib.request.urlopen(f"{PLAYBACK_API}/get?{q}", timeout=30) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as err:
+        return err.code, b""
+    except Exception:
+        return 0, b""
+
+
+def buffer_coverage(stream: str, start: datetime, end: datetime) -> float | None:
+    """순환 버퍼에서 [start, end] 구간 중 실제로 녹화된 초 수 (재생 서버 /list 기준)."""
+    try:
+        with urllib.request.urlopen(f"{PLAYBACK_API}/list?{urllib.parse.urlencode({'path': stream})}", timeout=5) as resp:
+            segs = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    total = 0.0
+    for s in segs:
+        s0 = parse_ts(s["start"])
+        s1 = s0 + timedelta(seconds=float(s.get("duration") or 0))
+        total += max(0.0, (min(end, s1) - max(start, s0)).total_seconds())
+    return total
+
+
+async def make_clip(event_id: str) -> None:
+    with db() as conn:
+        row = conn.execute("SELECT data FROM events WHERE event_id=?", (event_id,)).fetchone()
+        if not row:
+            return
+        e = json.loads(row["data"])
+        dev = conn.execute("SELECT data FROM devices WHERE device_id=?", (e["device_id"],)).fetchone()
+    if (e.get("media") or {}).get("clip"):
+        return  # 젯슨이 직접 올린 클립이 있으면 그대로 둔다
+    stream = (json.loads(dev["data"]).get("stream") if dev else None) or None
+    if not stream:
+        set_clip_state(event_id, clip_status="missing", clip_note="장치에 영상 경로(stream)가 등록되지 않았습니다.")
+        return
+    c = clip_cfg()
+    start, end, note = clip_window(e)
+    if (now_utc() - start).total_seconds() > c["buffer_s"]:
+        set_clip_state(event_id, clip_status="missing", clip_note=f"사건이 늦게 도착해 순환 버퍼({c['buffer_s'] // 60}분)에서 영상이 이미 삭제되었습니다.")
+        return
+    wait = (end - now_utc()).total_seconds() + 4  # 뒤 구간이 녹화 파일에 기록될 때까지
+    if wait > 0:
+        await asyncio.sleep(wait)
+    status_code, data = 0, b""
+    for attempt in range(4):
+        status_code, data = await asyncio.to_thread(fetch_playback, stream, start, (end - start).total_seconds())
+        if status_code == 200 and len(data) > 1024:
+            break
+        await asyncio.sleep(5 + attempt * 5)
+    if status_code != 200 or len(data) <= 1024:
+        reason = "해당 시각에 서버로 들어온 영상이 없습니다 (젯슨 송출 끊김)." if status_code == 404 else f"클립 추출 실패 (재생 서버 응답 {status_code})."
+        set_clip_state(event_id, clip_status="missing", clip_note=reason)
+        hub.publish("event_update", {"event_id": event_id, "update": "media", "clip_status": "missing"})
+        return
+    covered = await asyncio.to_thread(buffer_coverage, stream, start, end)
+    want = (end - start).total_seconds()
+    if covered is not None and covered < want - 1.5:
+        partial = f"요청 {want:.0f}초 중 {covered:.0f}초만 영상이 있습니다 (그 사이 젯슨 송출 끊김)."
+        note = f"{note} {partial}" if note else partial
+    folder = media_folder(e)
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = folder / "clip.mp4.tmp"
+    tmp.write_bytes(data)
+    os.replace(tmp, folder / "clip.mp4")
+    url = f"/snapshots/{folder.relative_to(SNAP_DIR).as_posix()}/clip.mp4"
+    if set_clip_state(event_id, clip=url, clip_status="ready", clip_source="server", clip_note=note,
+                      clip_range=[iso(start), iso(end)], clip_size=len(data)) is None:
+        shutil.rmtree(folder, ignore_errors=True)  # 기다리는 사이 사건이 보존 규칙으로 삭제됨
+        return
+    hub.publish("event_update", {"event_id": event_id, "update": "media", "clip_status": "ready", "media": {"clip": url}})
+
+
+def schedule_clip(event_id: str) -> None:
+    task = asyncio.create_task(make_clip(event_id))
+    _clip_tasks.add(task)
+    task.add_done_callback(_clip_tasks.discard)
+
+
+def resume_pending_clips() -> None:
+    """서버 재시작 전에 대기 중이던 클립 작업을 다시 건다 (버퍼 안에 있는 사건만)."""
+    since = iso(now_utc() - timedelta(seconds=clip_cfg()["buffer_s"]))
+    with db() as conn:
+        rows = conn.execute("SELECT event_id FROM events WHERE received_at >= ? AND json_extract(data,'$.media.clip_status') = 'pending'", (since,)).fetchall()
+    for r in rows:
+        schedule_clip(r["event_id"])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     hub.loop = asyncio.get_running_loop()
     task = asyncio.create_task(watchdog())
+    resume_pending_clips()
     yield
     task.cancel()
 
@@ -621,6 +753,8 @@ async def ingest_event(request: Request, device_id: str = Depends(device_auth)):
         enforce_retention(conn)
         view = event_view(conn, conn.execute("SELECT * FROM events WHERE event_id=?", (e["event_id"],)).fetchone())
     hub.publish("event", view)
+    if (view.get("media") or {}).get("clip_status") == "pending":
+        schedule_clip(e["event_id"])
     return JSONResponse({"event_id": e["event_id"], "received_at": e["received_at"]}, status_code=201)
 
 
@@ -656,25 +790,30 @@ async def event_media(event_id: str, device_id: str = Depends(device_auth), snap
             raise HTTPException(403, "다른 장치의 사건입니다.")
         folder = media_folder(e)
         folder.mkdir(parents=True, exist_ok=True)
-        saved = {}
+        saved, files = {}, {}
         for name, up, fname in (("snapshot", snapshot, "snapshot.jpg"), ("snapshot_raw", snapshot_raw, "snapshot_raw.jpg"), ("clip", clip, "clip.mp4")):
             if up is None:
                 continue
             data = await up.read()
             if len(data) > 200 * 1024 * 1024:
                 raise HTTPException(413, f"{name} 파일이 너무 큽니다.")
-            (folder / fname).write_bytes(data)
+            tmp = folder / (fname + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, folder / fname)
             saved[name] = f"/snapshots/{folder.relative_to(SNAP_DIR).as_posix()}/{fname}"
+            # 젯슨은 size·sha256 이 로컬 파일과 같을 때만 로컬 파일을 지운다
+            files[name] = {"url": saved[name], "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
         if "snapshot" in saved:
             e["media"]["snapshot"] = saved["snapshot"]
         if "clip" in saved:
             e["media"]["clip"] = saved["clip"]
+            e["media"]["clip_status"], e["media"]["clip_source"], e["media"]["clip_note"] = "ready", "device", None
         if "snapshot_raw" in saved:
             e["media"]["snapshot_raw"] = saved["snapshot_raw"]  # 조회 API 에서는 숨기고 /raw 로만 발급
         e["media"]["pending"] = {k: v for k, v in (e["media"].get("pending") or {}).items() if k not in saved}
         save_event(conn, e)
     hub.publish("event_update", {"event_id": event_id, "device_id": device_id, "update": "media", "media": {k: v for k, v in saved.items() if k != "snapshot_raw"}})
-    return saved
+    return {**saved, "files": files}
 
 
 @app.post("/api/heartbeat")
