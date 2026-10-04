@@ -256,7 +256,37 @@ def device_view(conn, row) -> dict:
         "thumbnail_at": iso(datetime.fromtimestamp(thumb.stat().st_mtime, tz=timezone.utc)) if thumb.exists() else None,
         "site": site_of(conn, d.get("site_id", "")),
         "roi": roi_summary(conn, row["device_id"]),
+        "last_seen_s": int(age) if age is not None else None,
+        "video": stream_state(d.get("stream")),
     }
+
+
+# ---------------------------------------------------------------- 영상 송출 상태 (MediaMTX 로컬 API, 127.0.0.1:9997)
+MEDIAMTX_API = os.environ.get("MEDIAMTX_API", "http://127.0.0.1:9997")
+_stream_cache: dict[str, tuple[float, dict | None]] = {}
+
+
+def stream_state(stream: str | None) -> dict | None:
+    """젯슨이 지금 SRT 로 송출 중인지. MediaMTX API 에 접근할 수 없으면 None (판단 불가)."""
+    if not stream:
+        return None
+    now = now_utc().timestamp()
+    hit = _stream_cache.get(stream)
+    if hit and now - hit[0] < 3:
+        return hit[1]
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{MEDIAMTX_API}/v3/paths/get/{stream}", timeout=1.5) as resp:
+            p = json.loads(resp.read().decode("utf-8"))
+        result = {"publishing": bool(p.get("ready")), "since": p.get("readyTime"), "readers": len(p.get("readers") or []),
+                  "bytes_received": p.get("bytesReceived") or p.get("inboundBytes") or 0}
+    except urllib.error.HTTPError as e:
+        result = {"publishing": False, "since": None, "readers": 0, "bytes_received": 0} if e.code == 404 else None
+    except Exception:
+        result = None
+    _stream_cache[stream] = (now, result)
+    return result
 
 
 # ---------------------------------------------------------------- ROI 원격 설정 (jetson_data.md §7 set_config 의 ROI 부분)
@@ -394,17 +424,32 @@ def evaluate_device_alerts(conn, device_id: str) -> None:
         resolve_alerts(conn, device_id, ["stream_lost"])
 
 
+WATCHDOG_INTERVAL_S = 10
+_last_device_state: dict[str, tuple] = {}
+
+
 async def watchdog() -> None:
-    """30초마다 오프라인 판정 (하트비트가 아예 끊긴 장치는 하트비트 핸들러가 못 잡으므로)."""
+    """10초마다 장치 상태 재판정. 하트비트가 끊긴 장치는 이벤트가 생기지 않으므로 여기서 오프라인 전환을 감지하고,
+    상태(online/offline/…)나 영상 송출 여부가 바뀌면 대시보드에 device_status 로 즉시 알린다."""
     while True:
+        changes = []
         try:
             with _db_lock, db() as conn:
-                for r in conn.execute("SELECT device_id FROM devices"):
+                for r in conn.execute("SELECT * FROM devices"):
                     evaluate_device_alerts(conn, r["device_id"])
+                    v = device_view(conn, r)
+                    state = (v["status"], (v.get("video") or {}).get("publishing"))
+                    prev = _last_device_state.get(r["device_id"])
+                    if prev is not None and prev != state:
+                        changes.append({"device_id": r["device_id"], "status": v["status"], "previous": prev[0],
+                                        "video": v.get("video"), "last_received_at": v.get("last_received_at"), "last_seen_s": v.get("last_seen_s")})
+                    _last_device_state[r["device_id"]] = state
                 enforce_retention(conn)
         except Exception as e:  # noqa: BLE001
             print("watchdog error:", e)
-        await asyncio.sleep(30)
+        for c in changes:
+            hub.publish("device_status", c)
+        await asyncio.sleep(WATCHDOG_INTERVAL_S)
 
 
 # ---------------------------------------------------------------- 이벤트 모델
@@ -828,9 +873,13 @@ def device_stream(device_id: str, user: str = Depends(dashboard_user)):
         out["thumbnail"] = {"url": f"/snapshots/_thumbs/{device_id}/latest.jpg", "ts": d["thumbnail_at"]}
         out["ts"] = d["thumbnail_at"]
     stream = d.get("stream")
+    video = d.get("video")
+    out["video"] = video
+    out["device_status"] = d["status"]
     if stream and SETTINGS.get("live_base"):
         proto = "hls" if SETTINGS.get("live_protocol") == "hls" else "webrtc"
-        out["connected"] = True
+        # 송출 여부를 알 수 있으면 그대로, MediaMTX API 를 못 읽으면(None) 연결 시도는 허용
+        out["connected"] = video is None or bool(video.get("publishing"))
         out["live"] = {"protocol": proto, "url": f"{SETTINGS['live_base'].rstrip('/')}/{stream}/" + ("index.m3u8" if proto == "hls" else "whep"), "stream": stream,
                        "variants": [{"id": "annotated", "desc": "추적 박스·이벤트 표시 + 모자이크", "default": True}]}
     return out

@@ -9,7 +9,7 @@ const demo=createDemoApi({storage:window.localStorage});
 const serverApi=createServerApi({config,storage:window.localStorage});
 let api=demo.request,serverMode=false,realtime=null,realtimeState='off';
 
-let roiEditor=null,roiDoc=null,roiDeviceId=null;
+let roiEditor=null,roiDoc=null,roiDeviceId=null,deviceDialogId=null;
 let page='overview',context={},sites=[],devices=[],leafletMap=null,livePlayer=null,thumbnailTimer=null,refreshTimer=null,loadSerial=0;
 let eventFilters={},eventPage=1,deviceFilters={q:'',status:''},alertFilter='active';
 const descriptions={overview:['CITY OPERATIONS','통합 관제','도시의 현황을 한눈에 살피고, 필요한 대응을 시작하세요.'],devices:['DEVICE MONITORING','장치 · 영상','설치 지점별 장치 상태와 모자이크 영상을 확인하세요.'],events:['EVENT MANAGEMENT','사건 관리','탐지된 사건을 검토하고, 현장 조치까지 기록하세요.'],stats:['INSIGHTS & IMPACT','통계 분석','무단투기 발생 추이와 방송 후 회수 현황을 살펴보세요.'],alerts:['NOTIFICATION CENTER','알림 센터','장치 장애와 새 사건을 확인하고 대응하세요.']};
@@ -72,7 +72,7 @@ async function renderEvents(serial){
 function renderDevices(){
  const filtered=devices.filter(d=>(!deviceFilters.status||d.status===deviceFilters.status)&&((d.name+' '+d.device_id+' '+d.site?.address).toLowerCase().includes(deviceFilters.q.toLowerCase())));
  content.innerHTML=`<form class="filters" id="device-filters"><label class="search">장치 검색<input name="q" placeholder="장치명, 지점 또는 주소 검색" value="${esc(deviceFilters.q)}"></label><label>상태<select name="status">${stateOptions(deviceFilters.status,true)}</select></label><button class="primary" type="submit">조회</button><div class="filter-end"><button type="button" id="register-site" class="button">+ 지점 등록</button><button type="button" id="register-device" class="button">+ 장치 등록</button></div></form><div class="device-grid">${filtered.map(d=>{
-  const h=d.heartbeat;return `<article class="device-card"><div class="device-preview" id="preview-${esc(d.device_id)}">${badge(d.status)}${icon('camera')}<small>영상 미연결 · 썸네일 대기</small></div><div class="device-info"><h3>${esc(d.site?.name||d.name)}</h3><p>${esc(d.device_id)} · ${esc(d.site?.address||'')}</p>${d.roi?.version?`<p class="roi-chip ${esc(d.roi.apply_state)}">ROI v${d.roi.version} · ${d.roi.apply_state==='applied'?'적용됨':d.roi.apply_state==='failed'?'적용 실패':'전달 대기'}</p>`:''}<div class="device-readings"><div>추론 속도<b>${h?h.pipeline.fps.toFixed(1):'—'} <small>FPS</small></b></div><div>GPU 온도<b>${h?.system?.temp_c?.gpu??'—'} <small>°C</small></b></div><div>방송 워커<b>${h?.tts?.worker==='ready'?'정상':'—'}</b></div></div><button class="button" data-device="${esc(d.device_id)}">장치 상세 · 영상 보기 ${icon('arrow')}</button></div></article>`;
+  const h=d.heartbeat;return `<article class="device-card"><div class="device-preview" id="preview-${esc(d.device_id)}">${badge(d.status)}${icon('camera')}<small>${d.video?.publishing?'영상 송출 중 · 상세에서 라이브 보기':'영상 미연결 · 썸네일 대기'}</small></div><div class="device-info"><h3>${esc(d.site?.name||d.name)}</h3><p>${esc(d.device_id)} · ${esc(d.site?.address||'')}</p>${d.roi?.version?`<p class="roi-chip ${esc(d.roi.apply_state)}">ROI v${d.roi.version} · ${d.roi.apply_state==='applied'?'적용됨':d.roi.apply_state==='failed'?'적용 실패':'전달 대기'}</p>`:''}<div class="device-readings"><div>추론 속도<b>${h?h.pipeline.fps.toFixed(1):'—'} <small>FPS</small></b></div><div>GPU 온도<b>${h?.system?.temp_c?.gpu??'—'} <small>°C</small></b></div><div>방송 워커<b>${h?.tts?.worker==='ready'?'정상':'—'}</b></div></div><button class="button" data-device="${esc(d.device_id)}">장치 상세 · 영상 보기 ${icon('arrow')}</button></div></article>`;
  }).join('')}</div>${filtered.length?'':empty('검색 조건에 맞는 장치가 없습니다.')}`;
  $('#device-filters').onsubmit=e=>{e.preventDefault();deviceFilters=Object.fromEntries(new FormData(e.target));renderDevices();};
  $('#register-site').onclick=()=>registration('site');$('#register-device').onclick=()=>registration('device');
@@ -111,10 +111,11 @@ async function openDevice(id){
  try{
  const d=devices.find(d=>d.device_id===id);if(!d)return;
  const [s,uptime,roi]=await Promise.all([api('/api/devices/'+id+'/stream'),api('/api/devices/'+id+'/uptime'),api('/api/devices/'+encodeURIComponent(id)+'/roi').catch(()=>null)]);const h=d.heartbeat;
- showDialog(d.site?.name||d.name,'DEVICE MONITORING',`<div class="detail-grid"><div><div class="evidence" id="device-evidence">${s.thumbnail?.url?`<img id="detail-thumb" src="${esc(s.thumbnail.url)}" alt="모자이크 썸네일">`:icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>'}</div><p class="evidence-caption" id="live-message">${s.live?'라이브 연결 가능 · '+esc(s.live.stream||'')+' ('+esc((s.live.protocol||'webrtc').toUpperCase())+') · 장치 상세에서만 연결합니다.':'미디어 서버 주소가 등록되지 않았습니다. config.js 의 live.base 와 장치 stream 을 확인하세요.'}</p>${s.live?'<button class="primary" id="start-live">라이브 영상 연결</button>':''}<div class="detail-section roi-section" id="roi-section"></div><div class="detail-section"><h3>설치 정보</h3><p>${esc(d.site?.address)}</p><p>${esc(d.hw?.model||'기기 정보 미등록')} · ${esc(d.device_id)}</p></div></div><div><div style="margin-bottom:20px">${badge(d.status)} ${context.demo&&d.demo?'<span class="demo-label">모의 하트비트</span>':''}</div><dl class="detail-facts"><dt>장치 시각</dt><dd>${fmtDate(d.last_heartbeat_at,true)}</dd><dt>서버 수신</dt><dd>${fmtDate(d.last_received_at,true)}</dd><dt>FPS</dt><dd>${h?.pipeline?.fps??'—'}</dd><dt>CPU / GPU</dt><dd>${h?.system?.cpu_pct??'—'}% / ${h?.system?.gpu_pct??'—'}%</dd><dt>GPU 온도</dt><dd>${h?.system?.temp_c?.gpu??'—'}°C</dd><dt>디스크 여유</dt><dd>${h?.system?.disk_free_mb??'—'} MB</dd><dt>방송 워커</dt><dd>${esc(h?.tts?.worker||'미수신')}</dd><dt>합성 지연</dt><dd>${h?.tts?.last_synth_ms??'—'} ms</dd><dt>관측 구간 정상률</dt><dd>${uptime.device_uptime_pct==null?'—':uptime.device_uptime_pct.toFixed(1)+'%'}<small class="cell-sub">오늘 ${Math.round(uptime.observed_seconds/60)}분 관측 · 미관측 구간 제외</small></dd><dt>이상 항목</dt><dd>${esc(h?.issues?.join(', ')||'없음')}</dd></dl><button id="maintenance-button" class="button">${d.maintenance?'점검 종료':'점검 모드로 전환'}</button><p class="footnote" style="padding:12px 0">점검 중에는 장치 장애 알림을 억제합니다.</p></div></div>`);
+ showDialog(d.site?.name||d.name,'DEVICE MONITORING',`<div class="detail-grid"><div><div class="evidence" id="device-evidence">${s.thumbnail?.url?`<img id="detail-thumb" src="${esc(s.thumbnail.url)}" alt="모자이크 썸네일">`:icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>'}</div><p class="evidence-caption" id="live-message">${s.live&&s.video&&!s.video.publishing?'젯슨이 지금 영상을 보내지 않습니다 · 송출이 시작되면 연결할 수 있습니다.':s.live?'라이브 연결 가능 · '+esc(s.live.stream||'')+' ('+esc((s.live.protocol||'webrtc').toUpperCase())+') · 장치 상세에서만 연결합니다.':'미디어 서버 주소가 등록되지 않았습니다. config.js 의 live.base 와 장치 stream 을 확인하세요.'}</p>${s.live?'<button class="primary" id="start-live">라이브 영상 연결</button>':''}<div class="detail-section roi-section" id="roi-section"></div><div class="detail-section"><h3>설치 정보</h3><p>${esc(d.site?.address)}</p><p>${esc(d.hw?.model||'기기 정보 미등록')} · ${esc(d.device_id)}</p></div></div><div><div style="margin-bottom:20px"><span id="device-status">${badge(d.status)}</span> ${context.demo&&d.demo?'<span class="demo-label">모의 하트비트</span>':''}</div><dl class="detail-facts"><dt>장치 시각</dt><dd>${fmtDate(d.last_heartbeat_at,true)}</dd><dt>서버 수신</dt><dd id="device-seen">${seenText(d)}</dd><dt>영상 송출</dt><dd id="device-video">${videoText(s.video??d.video)}</dd><dt>FPS</dt><dd>${h?.pipeline?.fps??'—'}</dd><dt>CPU / GPU</dt><dd>${h?.system?.cpu_pct??'—'}% / ${h?.system?.gpu_pct??'—'}%</dd><dt>GPU 온도</dt><dd>${h?.system?.temp_c?.gpu??'—'}°C</dd><dt>디스크 여유</dt><dd>${h?.system?.disk_free_mb??'—'} MB</dd><dt>방송 워커</dt><dd>${esc(h?.tts?.worker||'미수신')}</dd><dt>합성 지연</dt><dd>${h?.tts?.last_synth_ms??'—'} ms</dd><dt>관측 구간 정상률</dt><dd>${uptime.device_uptime_pct==null?'—':uptime.device_uptime_pct.toFixed(1)+'%'}<small class="cell-sub">오늘 ${Math.round(uptime.observed_seconds/60)}분 관측 · 미관측 구간 제외</small></dd><dt>이상 항목</dt><dd>${esc(h?.issues?.join(', ')||'없음')}</dd></dl><button id="maintenance-button" class="button">${d.maintenance?'점검 종료':'점검 모드로 전환'}</button><p class="footnote" style="padding:12px 0">점검 중에는 장치 장애 알림을 억제합니다.</p></div></div>`);
  $('#maintenance-button').onclick=async()=>{try{await send('/api/devices/'+id+'/maintenance',{enabled:!d.maintenance});toast('점검 상태가 변경되었습니다.');await load();await openDevice(id);}catch(e){toast(e.message);}};
- if(s.live)$('#start-live').onclick=()=>{$('#device-evidence').innerHTML='<video id="live-video" controls autoplay muted playsinline></video>';livePlayer=new LivePlayer($('#live-video'),$('#live-message'));livePlayer.start(s.live);$('#start-live').disabled=true;clearInterval(thumbnailTimer);attachRoi();};
- roiDoc=roi;roiDeviceId=id;renderRoiSection();attachRoi();
+
+ roiDoc=roi;roiDeviceId=id;deviceDialogId=id;renderRoiSection();attachRoi();
+ if(s.live)$('#start-live').onclick=()=>{livePlayer?.close();$('#device-evidence').innerHTML='<video id="live-video" controls autoplay muted playsinline></video>';livePlayer=new LivePlayer($('#live-video'),$('#live-message'),{onState:st=>{const b=$('#start-live');if(!b)return;b.disabled=st==='playing'||st==='connecting';if(st==='ended'||st==='stalled')b.textContent='라이브 다시 연결';}});livePlayer.start(s.live);$('#start-live').disabled=true;clearInterval(thumbnailTimer);attachRoi();};
  const img=$('#detail-thumb');if(img)img.onerror=()=>{img.parentElement.innerHTML=icon('camera')+'<p>썸네일을 불러올 수 없습니다.</p>';};
  thumbnailTimer=setInterval(async()=>{try{const next=await api('/api/devices/'+id+'/stream');const image=$('#detail-thumb');if(image&&next.thumbnail?.url)image.src=next.thumbnail.url+'?v='+encodeURIComponent(next.ts);}catch{}},5000);
  }catch(e){toast(e.message);}
@@ -188,6 +189,21 @@ async function refreshRoiState(deviceId){
   if(doc.apply_state==='failed'&&was!=='failed')toast('젯슨 ROI 적용 실패 · '+(doc.apply_error||''));
  }catch{}
 }
+// ---------- 장치 상태 표시 (하트비트 기준, 서버 판정 그대로)
+function seenText(d){if(!d.last_received_at)return '수신 기록 없음';const s=d.last_seen_s??Math.round((Date.now()-new Date(d.last_received_at))/1000);const ago=s<60?s+'초 전':s<3600?Math.floor(s/60)+'분 전':Math.floor(s/3600)+'시간 전';return esc(fmtDate(d.last_received_at,true))+' <small class="cell-sub">'+ago+(s>90?' · 90초 넘게 하트비트 없음':'')+'</small>';}
+function videoText(v){if(v==null)return '확인 불가';return v.publishing?'<span style="color:#2b907a">송출 중</span>'+(v.since?' <small class="cell-sub">'+esc(fmtDate(v.since))+'부터</small>':''):'<span style="color:#c16a61">송출 없음</span>';}
+function applyDeviceStatus(st){
+ const d=devices.find(x=>x.device_id===st.device_id);if(d){d.status=st.status;if(st.video!==undefined)d.video=st.video;if(st.last_received_at)d.last_received_at=st.last_received_at;if(st.last_seen_s!==undefined)d.last_seen_s=st.last_seen_s;}
+ if(!dialog.open||deviceDialogId!==st.device_id)return;
+ const badgeBox=$('#device-status');if(badgeBox)badgeBox.innerHTML=badge(st.status);
+ if(d){const seen=$('#device-seen');if(seen)seen.innerHTML=seenText(d);}
+ const video=$('#device-video');if(video&&st.video!==undefined)video.innerHTML=videoText(st.video);
+ if(st.video&&!st.video.publishing&&livePlayer&&livePlayer.state==='playing')livePlayer.setState('ended','젯슨 영상 송출이 종료되었습니다.');
+}
+async function refreshOpenDevice(){
+ if(!deviceDialogId)return;
+ try{const list=await api('/api/devices');const d=list.find(x=>x.device_id===deviceDialogId);if(d){const i=devices.findIndex(x=>x.device_id===d.device_id);if(i>=0)devices[i]=d;applyDeviceStatus({device_id:d.device_id,status:d.status,video:d.video,last_received_at:d.last_received_at,last_seen_s:d.last_seen_s});}}catch{}
+}
 function registration(kind){
  const site=kind==='site';
  showDialog(site?'설치 지점 등록':'장치 등록','REGISTER',`<form id="registration-form" class="registration">${site?'<label>지점 ID<input name="site_id" required pattern="[A-Za-z0-9_-]+" placeholder="SITE-GN-0009"></label><label>지점명<input name="name" required></label><label class="full">주소<input name="address" required></label><label>위도<input name="lat" type="number" step="any" min="-90" max="90" required></label><label>경도<input name="lng" type="number" step="any" min="-180" max="180" required></label><label>행정동<input name="dong" required></label><label>행정동 코드<input name="code" required></label><label>시도<input name="sido" value="서울특별시" required></label><label>시군구<input name="sigungu" value="강남구" required></label>':`<label>장치 ID<input name="device_id" required pattern="[A-Za-z0-9_-]+" placeholder="JT-GN-0009"></label><label>장치명<input name="name" required></label><label class="full">설치 지점<select name="site_id" required>${options(sites,'','지점 선택')}</select></label><label class="full">시연용 장치 토큰 (실제 비밀값 입력 금지)<input name="token" type="password" minlength="16" maxlength="100" required autocomplete="new-password"></label><p class="footnote full">화면 동작 확인용 등록입니다. 장치 연결이나 인증은 수행하지 않으며 입력한 토큰도 저장하지 않습니다.</p>`}<p id="registration-error" class="error full" role="alert"></p><button type="submit" class="primary full">등록하기</button></form>`);
@@ -202,7 +218,7 @@ document.addEventListener('click',async e=>{
  const device=e.target.closest('[data-device]');if(device){openDevice(device.dataset.device);return;}
  const ack=e.target.closest('[data-ack]');if(ack){ack.disabled=true;try{await send('/api/alerts/'+ack.dataset.ack+'/ack');toast('알림을 확인했습니다.');await load();}catch(error){toast(error.message);}finally{ack.disabled=false;}}
 });
-$('#close-dialog').onclick=closeDialog;dialog.addEventListener('close',stopLive);dialog.addEventListener('cancel',stopLive);$('#refresh').onclick=load;$('#top-alerts').onclick=()=>location.hash='alerts';window.addEventListener('hashchange',navigate);window.addEventListener('pagehide',stopLive);
+$('#close-dialog').onclick=closeDialog;dialog.addEventListener('close',()=>{deviceDialogId=null;stopLive();});dialog.addEventListener('cancel',stopLive);$('#refresh').onclick=load;$('#top-alerts').onclick=()=>location.hash='alerts';window.addEventListener('hashchange',navigate);window.addEventListener('pagehide',stopLive);
 $('#today').textContent=new Date().toLocaleDateString('ko-KR',{timeZone:'Asia/Seoul',year:'numeric',month:'long',day:'numeric',weekday:'short'});hydrateIcons();
 async function chooseMode(){
  const mode=config.mode||'auto';
@@ -217,6 +233,7 @@ function classifyMessage(data){
  if(!data||typeof data!=='object')return null;
  const body=data.type&&data.data&&typeof data.data==='object'?data.data:data;
  if(data.type==='device_config')return {kind:'config',body};
+ if(data.type==='device_status')return {kind:'status',body};
  if(body.update||data.type==='event_update')return {kind:'update',body};
  if(body.alert_id||data.type==='alert')return {kind:'alert',body};
  if(body.pipeline||body.uptime_s!=null||data.type==='heartbeat')return {kind:'heartbeat',body};
@@ -228,6 +245,7 @@ function startRealtime(){
  const url=serverApi.wsUrl(window.location);if(!url)return;
  let timer=null;
  const reload=(delay=800)=>{clearTimeout(timer);timer=setTimeout(()=>{if(!dialog.open)load();},delay);};
+ const reloadNow=()=>{clearTimeout(timer);if(!dialog.open)load();};
  realtime=connectEvents({url,onStatus:state=>{realtimeState=state;showConnection();},onEvent:data=>{
   const message=classifyMessage(data);if(!message)return;
   const {kind,body}=message;
@@ -238,6 +256,7 @@ function startRealtime(){
   else if(kind==='alert'){toast((body.summary||body.title||'새 알림')+'');reload();}
   else if(kind==='heartbeat'){reload(5000);}
   else if(kind==='config'){refreshRoiState(body.device_id);reload(5000);}
+  else if(kind==='status'){applyDeviceStatus(body);if(body.previous!==body.status&&(body.status==='offline'||body.previous==='offline'))toast((devices.find(d=>d.device_id===body.device_id)?.name||body.device_id)+(body.status==='offline'?' · 연결 끊김 (하트비트 90초 없음)':' · 연결 복구'));reloadNow();}
  }});
  window.addEventListener('pagehide',()=>realtime?.close());
 }
@@ -248,7 +267,7 @@ try{
  $('#reset-demo').hidden=serverMode;$('#user-role').textContent=serverMode?'운영 서버 연결':'프런트엔드 시연';
  context=await api('/api/context');$('#user-name').textContent=context.user||'관제 운영자';$('#demo-label').hidden=!context.demo;navigate();
  if(serverMode)startRealtime();
- refreshTimer=setInterval(()=>{if(!document.hidden&&!dialog.open&&page==='overview')load();},30000);setInterval(()=>{if(!document.hidden&&!dialog.open)refreshThumbnails();},5000);
+ refreshTimer=setInterval(()=>{if(document.hidden)return;if(dialog.open){refreshOpenDevice();return;}if(page==='overview'||page==='devices')load();},15000);setInterval(()=>{if(!document.hidden&&!dialog.open)refreshThumbnails();},5000);
 }catch(e){fail(e);}
 
 $('#reset-demo').onclick=()=>{if(window.confirm('이 브라우저의 시연 변경 내용을 초기화할까요?')){demo.reset();closeDialog();load();toast('시연 데이터를 초기화했습니다.');}};
