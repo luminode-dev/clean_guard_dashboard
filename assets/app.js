@@ -106,6 +106,14 @@ function clipBlock(e){
  if(m.clip_status==='missing'||m.clip_status==='expired')return `<div class="clip-box missing"><h3>투기 장면 영상</h3><p>${esc(m.clip_note||'영상 클립이 없습니다.')}</p></div>`;
  return '';
 }
+// 사건 관리 목록에서 바로 여는 영상 재생 창
+async function openClip(id){
+ try{
+  const e=await api('/api/events/'+encodeURIComponent(id));eventDialogId=null;
+  const m=e.media||{};if(!m.clip){toast(m.clip_note||'영상 클립이 없습니다.');return;}
+  showDialog((e.site?.name||e.site_id)+' · '+e.detection.class,'CLIP',`<div class="clip-box clip-dialog"><video controls autoplay muted playsinline src="${esc(m.clip)}"></video><small class="cell-sub">발생 ${esc(fmtDate(e.ts,true))}${m.clip_range?' · 구간 '+esc(fmtDate(m.clip_range[0]))+' ~ '+esc(fmtDate(m.clip_range[1])):''}${m.clip_note?' · '+esc(m.clip_note):''}</small></div><div class="clip-actions">${badge(e.review.state)}<a class="button" href="${esc(m.clip)}" download="${esc(e.event_id)}.mp4">${icon('download')} 영상 저장</a><button class="primary" data-event="${esc(e.event_id)}">사건 상세 · 처리</button></div>`);
+ }catch(err){toast(err.message);}
+}
 async function openEvent(id){
  eventDialogId=id;
  try{
@@ -228,6 +236,7 @@ document.addEventListener('click',async e=>{
  const csv=e.target.closest('a[href*="api/events.csv?"]');
  if(csv){e.preventDefault();try{const data=await api('/api/events.csv'+new URL(csv.href).search);const url=URL.createObjectURL(new Blob([data],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=serverMode?'clean-guard-events.csv':'clean-guard-demo-events.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){toast(error.message);}return;}
 
+ const clipBtn=e.target.closest('[data-clip-event]');if(clipBtn){e.stopPropagation();openClip(clipBtn.dataset.clipEvent);return;}
  const event=e.target.closest('[data-event]');if(event){openEvent(event.dataset.event);return;}
  const device=e.target.closest('[data-device]');if(device){openDevice(device.dataset.device);return;}
  const ack=e.target.closest('[data-ack]');if(ack){ack.disabled=true;try{await send('/api/alerts/'+ack.dataset.ack+'/ack');toast('알림을 확인했습니다.');await load();}catch(error){toast(error.message);}finally{ack.disabled=false;}}
