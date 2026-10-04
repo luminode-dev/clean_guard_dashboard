@@ -1,3 +1,4 @@
+import {validateZones} from './roi-editor.js';
 const KEY='clean-guard-ui-demo-v1';
 const copy=v=>structuredClone(v);
 export const day=v=>new Date(new Date(v).getTime()+32400000).toISOString().slice(0,10);
@@ -31,6 +32,9 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
  if(state?.schema!==1||!['sites','devices','events','alerts'].every(k=>Array.isArray(state[k])))state=seed(now());
  const save=()=>storage?.setItem(KEY,JSON.stringify(state));
  const withSite=v=>({...v,site:state.sites.find(s=>s.site_id===v.site_id)});
+ // 시연 모드에는 젯슨이 없으므로 저장 즉시 적용된 것으로 간주
+ const roiDoc=id=>{const r=(state.roi||{})[id];return r?{device_id:id,...copy(r),applied_version:r.version,apply_state:'applied',apply_error:null}:{device_id:id,version:0,updated_at:null,updated_by:null,frame_ref:null,zones:[],applied_version:0,apply_state:'none',apply_error:null};};
+ const roiSummary=id=>{const r=(state.roi||{})[id];return r?{version:r.version,applied_version:r.version,apply_state:'applied',zones:r.zones.length}:{version:0,applied_version:0,apply_state:'none',zones:0};};
  function filtered(p){
   for(const key of ['from','to'])check(!p.get(key)||/^\d{4}-\d{2}-\d{2}$/.test(p.get(key)),'날짜 형식이 올바르지 않습니다.');
   check(!p.get('from')||!p.get('to')||p.get('from')<=p.get('to'),'시작일이 종료일보다 늦습니다.');
@@ -41,7 +45,8 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
   if(method==='GET'){
    if(path==='/api/context')return {user:'시연 운영자',demo:true,investigator:false,server_time:now().toISOString()};
    if(path==='/api/sites')return state.sites;
-   if(path==='/api/devices')return state.devices.map(withSite);
+   if(path==='/api/devices')return state.devices.map(d=>({...withSite(d),roi:roiSummary(d.device_id)}));
+   const roiGet=path.match(/^\/api\/devices\/([^/]+)\/roi$/);if(roiGet){const id=decodeURIComponent(roiGet[1]);check(state.devices.some(d=>d.device_id===id),'장치가 없습니다.');return roiDoc(id);}
    if(path==='/api/alerts')return state.alerts;
    if(path==='/api/overview')return {summary:summary(state.events.filter(e=>day(e.ts)===day(now()))),device_counts:state.devices.reduce((a,d)=>(a[d.status]=(a[d.status]||0)+1,a),{}),all_pending:summary(state.events).pending,unacked_alerts:state.alerts.filter(a=>!a.acked&&!a.resolved).length};
    if(path==='/api/stats'){
@@ -58,6 +63,10 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
    if(/^\/api\/devices\/[^/]+\/stream$/.test(path))return {connected:false};
    if(/^\/api\/devices\/[^/]+\/uptime$/.test(path))return {device_uptime_pct:null,observed_seconds:0};
   }
+  if(method==='PUT'){
+   const roiPut=path.match(/^\/api\/devices\/([^/]+)\/roi$/);
+   if(roiPut){const id=decodeURIComponent(roiPut[1]);check(state.devices.some(d=>d.device_id===id),'장치가 없습니다.');const err=validateZones(body.zones);check(!err,err);const cur=(state.roi||{})[id];const version=(cur?.version||0);check((body.base_version??version)===version,'다른 사용자가 ROI 를 먼저 수정했습니다. 다시 불러오세요.');state.roi={...(state.roi||{}),[id]:{version:version+1,updated_at:now().toISOString(),updated_by:'시연 운영자',frame_ref:body.frame_ref||null,zones:copy(body.zones)}};return roiDoc(id);}
+  }
   if(method==='POST'){
    const review=path.match(/^\/api\/events\/([^/]+)\/review$/);
    if(review){const e=state.events.find(e=>e.event_id===decodeURIComponent(review[1]));check(e,'사건을 찾을 수 없습니다.');check(body.version===e.version,'다른 변경이 있습니다. 다시 조회하세요.');const from=e.review.state;check(({new:['reviewing','dismissed'],reviewing:['confirmed','dismissed'],confirmed:['actioned']}[from]||[]).includes(body.state),'허용되지 않은 상태 변경입니다.');if(body.state==='dismissed')check(['false_positive','authorized','duplicate'].includes(body.reason),'제외 사유가 필요합니다.');if(body.state==='actioned')check(body.action?.type&&body.action?.result?.trim(),'조치 유형과 결과가 필요합니다.');e.review.state=body.state;e.review.history.push({from,to:body.state,at:now().toISOString(),by:'시연 운영자',note:body.note||''});if(body.state==='dismissed')e.review.reason=body.reason;if(body.state==='actioned')e.review.action=copy(body.action);e.version++;return withSite(e);}
@@ -68,5 +77,5 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
   }
   throw new Error('지원하지 않는 시연 요청입니다: '+path);
  }
- return {request:async(url,options={})=>{const stored=storage?.getItem(KEY);if(stored){const latest=JSON.parse(stored);if(latest.schema===1)state=latest;}const before=copy(state);try{const result=route(url,options);if(options.method==='POST')save();return copy(result);}catch(error){state=before;throw error;}},reset(){const fresh=seed(now());storage?.setItem(KEY,JSON.stringify(fresh));state=fresh;}};
+ return {request:async(url,options={})=>{const stored=storage?.getItem(KEY);if(stored){const latest=JSON.parse(stored);if(latest.schema===1)state=latest;}const before=copy(state);try{const result=route(url,options);if(options.method==='POST'||options.method==='PUT')save();return copy(result);}catch(error){state=before;throw error;}},reset(){const fresh=seed(now());storage?.setItem(KEY,JSON.stringify(fresh));state=fresh;}};
 }

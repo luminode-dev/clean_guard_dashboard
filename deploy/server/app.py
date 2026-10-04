@@ -138,6 +138,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS ix_ev_day ON events(day);
             CREATE TABLE IF NOT EXISTS alerts (alert_id TEXT PRIMARY KEY, ts TEXT, device_id TEXT, kind TEXT, data TEXT NOT NULL, acked INTEGER DEFAULT 0, resolved INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS raw_access (at TEXT, user TEXT, event_id TEXT);
+            CREATE TABLE IF NOT EXISTS device_config (
+                device_id TEXT PRIMARY KEY, version INTEGER DEFAULT 0, data TEXT NOT NULL, updated_at TEXT,
+                applied_version INTEGER DEFAULT 0, applied_at TEXT, apply_error TEXT);
             """
         )
         for s in SETTINGS["sites"]:
@@ -252,7 +255,81 @@ def device_view(conn, row) -> dict:
         "last_received_at": last_received,
         "thumbnail_at": iso(datetime.fromtimestamp(thumb.stat().st_mtime, tz=timezone.utc)) if thumb.exists() else None,
         "site": site_of(conn, d.get("site_id", "")),
+        "roi": roi_summary(conn, row["device_id"]),
     }
+
+
+# ---------------------------------------------------------------- ROI 원격 설정 (jetson_data.md §7 set_config 의 ROI 부분)
+ROI_MAX_ZONES = 16
+ROI_MAX_POINTS = 32
+
+
+def roi_row(conn, device_id: str):
+    return conn.execute("SELECT * FROM device_config WHERE device_id=?", (device_id,)).fetchone()
+
+
+def roi_state(row) -> str:
+    if not row or not row["version"]:
+        return "none"
+    if row["apply_error"] and (row["applied_version"] or 0) < row["version"]:
+        return "failed"
+    return "applied" if (row["applied_version"] or 0) >= row["version"] else "pending"
+
+
+def roi_summary(conn, device_id: str) -> dict:
+    r = roi_row(conn, device_id)
+    if not r:
+        return {"version": 0, "applied_version": 0, "apply_state": "none", "zones": 0}
+    return {"version": r["version"], "applied_version": r["applied_version"] or 0, "apply_state": roi_state(r),
+            "apply_error": r["apply_error"], "zones": len(json.loads(r["data"]).get("zones", []))}
+
+
+def roi_document(conn, device_id: str) -> dict:
+    r = roi_row(conn, device_id)
+    doc = json.loads(r["data"]) if r else {"version": 0, "updated_at": None, "updated_by": None, "frame_ref": None, "zones": []}
+    doc["device_id"] = device_id
+    return doc
+
+
+def validate_zones(zones: Any) -> list[dict]:
+    if not isinstance(zones, list):
+        raise HTTPException(422, "zones 는 배열이어야 합니다.")
+    if len(zones) > ROI_MAX_ZONES:
+        raise HTTPException(422, f"구역은 최대 {ROI_MAX_ZONES}개입니다.")
+    out, seen = [], set()
+    for i, z in enumerate(zones):
+        if not isinstance(z, dict):
+            raise HTTPException(422, f"{i + 1}번째 구역 형식이 올바르지 않습니다.")
+        ztype = z.get("type")
+        if ztype not in ("include", "exclude"):
+            raise HTTPException(422, f"{i + 1}번째 구역 type 은 include | exclude 여야 합니다.")
+        pts = z.get("points")
+        if not isinstance(pts, list) or not (3 <= len(pts) <= ROI_MAX_POINTS):
+            raise HTTPException(422, f"{i + 1}번째 구역은 꼭짓점 3~{ROI_MAX_POINTS}개가 필요합니다.")
+        clean = []
+        for p in pts:
+            if not (isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in p)):
+                raise HTTPException(422, f"{i + 1}번째 구역 좌표는 0~1 사이 [x, y] 여야 합니다.")
+            clean.append([round(float(p[0]), 5), round(float(p[1]), 5)])
+        zid = str(z.get("id") or f"z{i + 1}")[:32]
+        if zid in seen:
+            zid = f"{zid}_{i + 1}"
+        seen.add(zid)
+        out.append({"id": zid, "name": str(z.get("name") or ("감시 구역" if ztype == "include" else "제외 구역"))[:40], "type": ztype, "points": clean})
+    return out
+
+
+def mark_roi_applied(conn, device_id: str, version: int, ok: bool = True, error: str | None = None) -> bool:
+    r = roi_row(conn, device_id)
+    if not r or not isinstance(version, int):
+        return False
+    if ok:
+        if version <= (r["applied_version"] or 0) or version > r["version"]:
+            return False
+        conn.execute("UPDATE device_config SET applied_version=?, applied_at=?, apply_error=NULL WHERE device_id=?", (version, iso(now_utc()), device_id))
+    else:
+        conn.execute("UPDATE device_config SET apply_error=? WHERE device_id=?", (str(error or "적용 실패")[:300], device_id))
+    return True
 
 
 def all_devices(conn) -> list[dict]:
@@ -572,10 +649,41 @@ async def heartbeat(request: Request, device_id: str = Depends(device_auth)):
             if body.get(k):
                 d[k] = body[k]
         conn.execute("UPDATE devices SET data=? WHERE device_id=?", (json.dumps(d, ensure_ascii=False), device_id))
+        # 장치가 실제 적용 중인 ROI 버전을 보고하면 반영 (ack 유실 대비, §2 "실제 적용 값 보고")
+        reported = (body.get("config") or {}).get("roi_version") if isinstance(body.get("config"), dict) else None
+        roi_changed = isinstance(reported, int) and mark_roi_applied(conn, device_id, reported)
         evaluate_device_alerts(conn, device_id)
         view = device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone())
     hub.publish("heartbeat", {"device_id": device_id, "status": view["status"], "ts": ts, "pipeline": body.get("pipeline"), "issues": body.get("issues", [])})
-    return {"device_id": device_id, "status": view["status"], "received_at": received}
+    if roi_changed:
+        hub.publish("device_config", {"device_id": device_id, **view["roi"]})
+    return {"device_id": device_id, "status": view["status"], "received_at": received, "config": {"roi_version": view["roi"]["version"]}}
+
+
+@app.get("/api/device/config")
+def device_config_for_device(device_id: str = Depends(device_auth)):
+    """젯슨용: 하트비트 응답의 config.roi_version 이 로컬보다 크면 이걸로 받아 config/roi.json 에 저장한다."""
+    with db() as conn:
+        return {"device_id": device_id, "roi": roi_document(conn, device_id)}
+
+
+@app.post("/api/device/config/ack")
+async def device_config_ack(request: Request, device_id: str = Depends(device_auth)):
+    body = await read_json(request)
+    version = body.get("roi_version")
+    if not isinstance(version, int):
+        raise HTTPException(422, "roi_version(정수)이 필요합니다.")
+    ok = body.get("ok", True) is not False
+    with _db_lock, db() as conn:
+        r = roi_row(conn, device_id)
+        if not r:
+            raise HTTPException(404, "이 장치에 ROI 설정이 없습니다.")
+        if version > r["version"]:
+            raise HTTPException(409, f"서버 버전({r['version']})보다 큰 버전입니다.")
+        mark_roi_applied(conn, device_id, version, ok, body.get("error"))
+        summary = roi_summary(conn, device_id)
+    hub.publish("device_config", {"device_id": device_id, **summary})
+    return summary
 
 
 @app.put("/api/devices/{device_id}/thumbnail")
@@ -673,6 +781,39 @@ async def maintenance(device_id: str, request: Request, user: str = Depends(dash
         else:
             evaluate_device_alerts(conn, device_id)
         return device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone())
+
+
+@app.get("/api/devices/{device_id}/roi")
+def get_roi(device_id: str, user: str = Depends(dashboard_user)):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM devices WHERE device_id=?", (device_id,)).fetchone():
+            raise HTTPException(404, "장치가 없습니다.")
+        return {**roi_document(conn, device_id), **{k: v for k, v in roi_summary(conn, device_id).items() if k not in ("version", "zones")}}
+
+
+@app.put("/api/devices/{device_id}/roi")
+async def put_roi(device_id: str, request: Request, user: str = Depends(dashboard_user)):
+    b = await read_json(request)
+    zones = validate_zones(b.get("zones"))
+    frame_ref = b.get("frame_ref")
+    if frame_ref is not None and not (isinstance(frame_ref, list) and len(frame_ref) == 2 and all(isinstance(v, int) and v > 0 for v in frame_ref)):
+        raise HTTPException(422, "frame_ref 는 [너비, 높이] 정수여야 합니다.")
+    with _db_lock, db() as conn:
+        if not conn.execute("SELECT 1 FROM devices WHERE device_id=?", (device_id,)).fetchone():
+            raise HTTPException(404, "장치가 없습니다.")
+        r = roi_row(conn, device_id)
+        current = r["version"] if r else 0
+        if b.get("base_version", current) != current:
+            raise HTTPException(409, "다른 사용자가 ROI 를 먼저 수정했습니다. 다시 불러오세요.")
+        version = current + 1
+        doc = {"version": version, "updated_at": iso(now_utc()), "updated_by": user, "frame_ref": frame_ref, "zones": zones}
+        if r:
+            conn.execute("UPDATE device_config SET version=?, data=?, updated_at=?, apply_error=NULL WHERE device_id=?", (version, json.dumps(doc, ensure_ascii=False), doc["updated_at"], device_id))
+        else:
+            conn.execute("INSERT INTO device_config(device_id, version, data, updated_at, applied_version) VALUES (?,?,?,?,0)", (device_id, version, json.dumps(doc, ensure_ascii=False), doc["updated_at"]))
+        result = {**roi_document(conn, device_id), **{k: v for k, v in roi_summary(conn, device_id).items() if k not in ("version", "zones")}}
+    hub.publish("device_config", {"device_id": device_id, "version": version, "applied_version": result["applied_version"], "apply_state": result["apply_state"], "zones": len(zones)})
+    return result
 
 
 @app.get("/api/devices/{device_id}/stream")

@@ -211,6 +211,7 @@ export function createServerApi({config={},fetcher,now=()=>new Date(),storage}={
     const live=liveFor(device);
     return live?{connected:true,ts:now().toISOString(),live}:{connected:false};
    }
+   if(/^\/api\/devices\/[^/]+\/roi$/.test(path)){try{return await http(path);}catch(e){if(e.code==='NOT_FOUND')throw new Error('서버가 ROI 기능을 지원하지 않습니다. 서버 app.py 를 업데이트하세요.');throw e;}}
    const uptime=path.match(/^\/api\/devices\/([^/]+)\/uptime$/);
    if(uptime){const r=await optional('uptime','/api/devices/'+uptime[1]+'/uptime');return r||{device_uptime_pct:null,observed_seconds:0};}
    return http(path+qs);
@@ -221,6 +222,11 @@ export function createServerApi({config={},fetcher,now=()=>new Date(),storage}={
    if(ack&&ack[1].startsWith('derived-')){const set=acks();set.add(ack[1]);storage?.setItem(ACK_KEY,JSON.stringify([...set]));return {alert_id:ack[1],acked:true};}
    try{return await http(path,{method:'POST',body:options.body});}
    catch(e){if(e.code==='NOT_FOUND')throw new Error('서버에 아직 구현되지 않은 기능입니다 ('+path+'). FastAPI 에 해당 엔드포인트를 추가해야 합니다.');throw e;}
+  }
+  if(method==='PUT'){
+   cache.items=null;
+   try{return await http(path,{method:'PUT',body:options.body});}
+   catch(e){if(e.code==='NOT_FOUND')throw new Error('서버에 아직 구현되지 않은 기능입니다 ('+path+'). 서버 app.py 를 업데이트하세요.');throw e;}
   }
   return http(path+qs,options);
  }

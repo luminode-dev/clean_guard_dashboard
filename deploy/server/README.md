@@ -19,10 +19,14 @@
 - 1건당 스냅샷 2장(수백 KB) + 클립(720p 20초, 약 4 MB) 기준으로 1000건이면 약 5 GB 입니다.
 - 현재 건수와 상한은 `GET /api/context` 의 `retention` 으로 확인합니다.
 
+## ROI 원격 설정
+
+대시보드에서 그린 감시·제외 구역(0~1 정규화 다각형)을 `device_config` 테이블에 버전과 함께 저장합니다. 하트비트 응답의 `config.roi_version` 으로 젯슨에 알리고, 젯슨은 `GET /api/device/config` 로 받아 `config/roi.json` 에 저장한 뒤 `POST /api/device/config/ack` 로 결과를 보고합니다. 저장 시 `base_version` 이 다르면 409(동시 편집 방지). 적용 상태(`none|pending|applied|failed`)는 `/ws/events` 의 `device_config` 메시지로 대시보드에 실시간 반영됩니다.
+
 ## 계약 요약
 
-장치(Bearer 토큰): `POST /api/events`, `POST /api/events/{id}/update`, `POST /api/events/{id}/media`(multipart), `POST /api/heartbeat`, `PUT /api/devices/{id}/thumbnail`
-대시보드(Basic, realm "Clean Guard"): `/api/context`, `/api/sites`, `/api/devices`, `/api/events`, `/api/events.csv`, `/api/events/{id}`, `/api/events/{id}/raw`, `/api/overview`, `/api/stats`, `/api/alerts`, `/api/devices/{id}/stream|uptime`, `POST …/review|ack|maintenance|sites|devices`, `WS /ws/events`
+장치(Bearer 토큰): `POST /api/events`, `POST /api/events/{id}/update`, `POST /api/events/{id}/media`(multipart), `POST /api/heartbeat`(응답에 `config.roi_version`), `PUT /api/devices/{id}/thumbnail`, `GET /api/device/config`, `POST /api/device/config/ack`
+대시보드(Basic, realm "Clean Guard"): `/api/context`, `/api/sites`, `/api/devices`, `/api/events`, `/api/events.csv`, `/api/events/{id}`, `/api/events/{id}/raw`, `/api/overview`, `/api/stats`, `/api/alerts`, `/api/devices/{id}/stream|uptime|roi`, `PUT /api/devices/{id}/roi`, `POST …/review|ack|maintenance|sites|devices`, `WS /ws/events`
 
 자세한 페이로드는 `../../../jetson_handoff.md`, 데이터 정의는 `jetson_data.md` 를 따릅니다.
 
