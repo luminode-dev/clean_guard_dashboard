@@ -206,6 +206,94 @@ def device_auth(request: Request) -> str:
     return device_id
 
 
+# ---------------------------------------------------------------- 장치 등록 자동화 (토큰 · 영상 경로 · MediaMTX 송출 계정)
+STREAM_RE = re.compile(r"site\d+_cam\d+")
+MEDIAMTX_CONFIG = Path(os.environ.get("CLEAN_GUARD_MEDIAMTX_CONFIG") or SETTINGS.get("mediamtx_config") or r"C:\server\mediamtx\mediamtx.yml")
+MTX_BEGIN, MTX_END = "  # >>> CLEAN_GUARD_DEVICE_USERS", "  # <<< CLEAN_GUARD_DEVICE_USERS"
+
+
+def mediamtx_add_publisher(user: str, stream: str, password: str, replace: bool = False) -> None:
+    """mediamtx.yml 의 장치 계정 구역에 송출 계정을 넣는다. MediaMTX 는 파일 변경을 감지해 자동으로 다시 읽는다.
+    같은 user 가 있으면 replace=True 일 때 비밀번호만 바꾸고, 아니면 오류."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", user) or not STREAM_RE.fullmatch(stream) or not re.fullmatch(r"[A-Za-z0-9]+", password):
+        raise ValueError("계정·경로·비밀번호 형식 오류")
+    text = MEDIAMTX_CONFIG.read_text(encoding="utf-8")
+    if MTX_BEGIN not in text or MTX_END not in text:
+        raise ValueError("mediamtx.yml 에 CLEAN_GUARD_DEVICE_USERS 표시가 없습니다")
+    head, rest = text.split(MTX_BEGIN, 1)
+    block, tail = rest.split(MTX_END, 1)
+    entry = re.compile(r"(  - user: " + re.escape(user) + r"\n    pass: )(\S+)")
+    if entry.search(block):
+        if not replace:
+            raise ValueError(f"송출 계정 {user} 가 이미 있습니다")
+        block = entry.sub(lambda m: m.group(1) + password, block, count=1)
+    else:
+        block = block.rstrip("\n") + (
+            f"\n  # 장치 {user} · {iso(now_utc())} 자동 등록\n"
+            f"  - user: {user}\n    pass: {password}\n    permissions:\n      - action: publish\n        path: {stream}\n")
+    new_text = head + MTX_BEGIN + block if block.endswith("\n") else head + MTX_BEGIN + block + "\n"
+    new_text += MTX_END + tail
+    tmp = MEDIAMTX_CONFIG.with_suffix(".yml.tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, MEDIAMTX_CONFIG)
+
+
+def mediamtx_remove_publisher(user: str) -> bool:
+    """장치 계정 구역에서 해당 송출 계정(자동 등록 주석 포함)을 지운다. 지웠으면 True."""
+    text = MEDIAMTX_CONFIG.read_text(encoding="utf-8")
+    if MTX_BEGIN not in text or MTX_END not in text:
+        return False
+    head, rest = text.split(MTX_BEGIN, 1)
+    block, tail = rest.split(MTX_END, 1)
+    pattern = re.compile(r"(?:  # 장치 " + re.escape(user) + r" · [^\n]*\n)?  - user: " + re.escape(user) + r"\n(?:    [^\n]*\n|      [^\n]*\n)+")
+    new_block, n = pattern.subn("", block if block.endswith("\n") else block + "\n")
+    if not n:
+        return False
+    tmp = MEDIAMTX_CONFIG.with_suffix(".yml.tmp")
+    tmp.write_text(head + MTX_BEGIN + new_block + MTX_END + tail, encoding="utf-8")
+    os.replace(tmp, MEDIAMTX_CONFIG)
+    return True
+
+
+def remove_device_token(device_id: str) -> None:
+    if not TOKENS_PATH.exists():
+        return
+    lines = [ln for ln in TOKENS_PATH.read_text(encoding="utf-8").splitlines()
+             if not (ln.strip() and not ln.lstrip().startswith("#") and ln.split("=", 1)[0].strip() == device_id)]
+    tmp = TOKENS_PATH.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, TOKENS_PATH)
+
+
+def set_device_token(device_id: str, token: str) -> None:
+    """device-tokens.txt 에서 해당 장치 줄을 바꾸거나 추가한다 (다른 장치 줄은 그대로)."""
+    lines = TOKENS_PATH.read_text(encoding="utf-8").splitlines() if TOKENS_PATH.exists() else []
+    out, found = [], False
+    for line in lines:
+        if line.strip() and not line.lstrip().startswith("#") and line.split("=", 1)[0].strip() == device_id:
+            out.append(f"{device_id}={token}")
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        out.append(f"{device_id}={token}")
+    tmp = TOKENS_PATH.with_suffix(".tmp")
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.replace(tmp, TOKENS_PATH)
+
+
+def provisioning(d: dict, token: str, srt_pass: str) -> dict:
+    """젯슨에 넣을 값. 응답으로 한 번만 보여 주고 서버는 다시 보여 주지 않는다 (분실 시 /credentials 로 재발급)."""
+    host = urllib.parse.urlparse(SETTINGS.get("public_base") or "https://cleanguard.duckdns.org").hostname or "cleanguard.duckdns.org"
+    srt_user = d.get("srt_user") or d["device_id"]
+    streamid = f"publish:{d['stream']}:{srt_user}:{srt_pass}"
+    srt_url = f"srt://{host}:{SETTINGS.get('srt_port', 8890)}?streamid={streamid}&pkt_size=1316&latency=200000"
+    return {"device_id": d["device_id"], "site_id": d.get("site_id"), "stream": d["stream"], "api_base": SETTINGS.get("public_base"),
+            "device_token": token, "srt_user": srt_user, "srt_password": srt_pass, "srt_streamid": streamid, "srt_url": srt_url,
+            "env": "\n".join([f"CG_DEVICE_ID={d['device_id']}", f"CG_SITE_ID={d.get('site_id') or ''}", f"CG_API_BASE={SETTINGS.get('public_base')}",
+                              f"CG_DEVICE_TOKEN={token}", f"CG_SRT_URL={srt_url}"])}
+
+
 # ---------------------------------------------------------------- 실시간 (WebSocket)
 class Hub:
     def __init__(self) -> None:
@@ -279,23 +367,26 @@ def stream_state(stream: str | None) -> dict | None:
     """젯슨이 지금 SRT 로 송출 중인지. MediaMTX API 에 접근할 수 없으면 None (판단 불가)."""
     if not stream:
         return None
+    # 경로별 조회(/paths/get)는 송출 없는 경로마다 MediaMTX 로그에 "path not found" 를 남기므로
+    # 전체 목록(/paths/list)을 3초에 한 번만 받아 이름으로 찾는다
     now = now_utc().timestamp()
-    hit = _stream_cache.get(stream)
-    if hit and now - hit[0] < 3:
-        return hit[1]
-    import urllib.error
-    import urllib.request
-    try:
-        with urllib.request.urlopen(f"{MEDIAMTX_API}/v3/paths/get/{stream}", timeout=1.5) as resp:
-            p = json.loads(resp.read().decode("utf-8"))
-        result = {"publishing": bool(p.get("ready")), "since": p.get("readyTime"), "readers": len(p.get("readers") or []),
-                  "bytes_received": p.get("bytesReceived") or p.get("inboundBytes") or 0}
-    except urllib.error.HTTPError as e:
-        result = {"publishing": False, "since": None, "readers": 0, "bytes_received": 0} if e.code == 404 else None
-    except Exception:
-        result = None
-    _stream_cache[stream] = (now, result)
-    return result
+    hit = _stream_cache.get("__list__")
+    if not hit or now - hit[0] >= 3:
+        try:
+            with urllib.request.urlopen(f"{MEDIAMTX_API}/v3/paths/list?itemsPerPage=1000", timeout=1.5) as resp:
+                items = {p.get("name"): p for p in json.loads(resp.read().decode("utf-8")).get("items") or []}
+        except Exception:
+            items = None
+        hit = (now, items)
+        _stream_cache["__list__"] = hit
+    items = hit[1]
+    if items is None:
+        return None
+    p = items.get(stream)
+    if not p:
+        return {"publishing": False, "since": None, "readers": 0, "bytes_received": 0}
+    return {"publishing": bool(p.get("ready")), "since": p.get("readyTime"), "readers": len(p.get("readers") or []),
+            "bytes_received": p.get("bytesReceived") or p.get("inboundBytes") or 0}
 
 
 # ---------------------------------------------------------------- ROI 원격 설정 (jetson_data.md §7 set_config 의 ROI 부분)
@@ -1078,14 +1169,14 @@ def sites(user: str = Depends(dashboard_user)):
 @app.post("/api/sites")
 async def add_site(request: Request, user: str = Depends(dashboard_user)):
     b = await read_json(request)
-    if not (b.get("site_id") and b.get("name") and b.get("address")):
-        raise HTTPException(422, "필수 항목을 입력하세요.")
+    if not (b.get("site_id") and b.get("name")):
+        raise HTTPException(422, "지점 ID 와 지점명을 입력하세요.")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", b["site_id"]):
         raise HTTPException(422, "지점 ID 형식이 올바르지 않습니다.")
-    loc = b.get("location") or {}
-    if not (isinstance(loc.get("lat"), (int, float)) and abs(loc["lat"]) <= 90 and isinstance(loc.get("lng"), (int, float)) and abs(loc["lng"]) <= 180):
+    loc = valid_location(b.get("location"))
+    if b.get("location") not in (None, {}) and loc is None:
         raise HTTPException(422, "위치가 올바르지 않습니다.")
-    s = {"site_id": b["site_id"], "name": b["name"], "address": b["address"], "location": {"lat": loc["lat"], "lng": loc["lng"]}, "region": b.get("region") or {}, "created_at": iso(now_utc())}
+    s = {"site_id": b["site_id"], "name": str(b["name"])[:60], "address": str(b.get("address") or "")[:200], "location": loc, "region": b.get("region") or {}, "version": 1 if loc else 0, "created_at": iso(now_utc())}
     with _db_lock, db() as conn:
         if conn.execute("SELECT 1 FROM sites WHERE site_id=?", (s["site_id"],)).fetchone():
             raise HTTPException(409, "이미 등록된 지점입니다.")
@@ -1181,28 +1272,94 @@ def devices(user: str = Depends(dashboard_user)):
 
 @app.post("/api/devices")
 async def add_device(request: Request, user: str = Depends(dashboard_user)):
+    """장치 등록 한 번으로 젯슨 연결에 필요한 것을 모두 준비한다.
+    장치 토큰 발급 → 영상 경로(siteNN_cam1) 지정 → MediaMTX 장치별 송출 계정 추가(설정 자동 재적용)
+    → 젯슨에 넣을 값(provisioning)을 응답으로 한 번만 돌려준다."""
     b = await read_json(request)
     if not (b.get("device_id") and b.get("name") and b.get("site_id")):
         raise HTTPException(422, "장치 정보와 설치 지점을 확인하세요.")
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", b["device_id"]):
-        raise HTTPException(422, "장치 ID 형식이 올바르지 않습니다.")
-    d = {"device_id": b["device_id"], "site_id": b["site_id"], "name": b["name"], "stream": b.get("stream"), "registered_at": iso(now_utc())}
+    if not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", b["device_id"]):
+        raise HTTPException(422, "장치 ID 는 영문·숫자·-·_ 2~40자여야 합니다.")
+    stream = str(b.get("stream") or "").strip() or None
+    if stream and not STREAM_RE.fullmatch(stream):
+        raise HTTPException(422, "영상 경로는 site01_cam1 형식(siteNN_camN)이어야 합니다.")
+    custom_token = str(b.get("token") or "").strip()
+    if custom_token and (len(custom_token) < 16 or not re.fullmatch(r"[A-Za-z0-9_.~-]+", custom_token)):
+        raise HTTPException(422, "장치 토큰은 영문·숫자·-·_·.·~ 16자 이상이어야 합니다. 비워 두면 서버가 생성합니다.")
     with _db_lock, db() as conn:
-        if not conn.execute("SELECT 1 FROM sites WHERE site_id=?", (d["site_id"],)).fetchone():
+        if not conn.execute("SELECT 1 FROM sites WHERE site_id=?", (b["site_id"],)).fetchone():
             raise HTTPException(422, "설치 지점이 없습니다.")
-        if conn.execute("SELECT 1 FROM devices WHERE device_id=?", (d["device_id"],)).fetchone():
+        if conn.execute("SELECT 1 FROM devices WHERE device_id=?", (b["device_id"],)).fetchone():
             raise HTTPException(409, "이미 등록된 장치입니다.")
+        used = {json.loads(r["data"]).get("stream") for r in conn.execute("SELECT data FROM devices")}
+        if stream and stream in used:
+            raise HTTPException(409, f"영상 경로 {stream} 는 이미 다른 장치가 쓰고 있습니다.")
+        if not stream:
+            n = 1
+            while f"site{n:02d}_cam1" in used:
+                n += 1
+            stream = f"site{n:02d}_cam1"
+        token = custom_token or "cg_" + secrets.token_urlsafe(24)
+        srt_pass = secrets.token_urlsafe(12).replace("-", "x").replace("_", "y")
+        try:
+            mediamtx_add_publisher(b["device_id"], stream, srt_pass)
+        except Exception as err:  # noqa: BLE001
+            raise HTTPException(500, f"미디어 서버 설정에 송출 계정을 추가하지 못했습니다: {err}")
+        d = {"device_id": b["device_id"], "site_id": b["site_id"], "name": str(b["name"])[:60], "stream": stream,
+             "srt_user": b["device_id"], "registered_at": iso(now_utc()), "registered_by": user}
         conn.execute("INSERT INTO devices(device_id, data) VALUES (?, ?)", (d["device_id"], json.dumps(d, ensure_ascii=False)))
-        token = None
-        if b.get("token") and len(str(b["token"])) >= 16:
-            token = str(b["token"])
-        else:
-            token = "cg_" + secrets.token_urlsafe(24)
-        with TOKENS_PATH.open("a", encoding="utf-8") as f:
-            f.write(f"{d['device_id']}={token}\n")
+        set_device_token(d["device_id"], token)
         view = device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (d["device_id"],)).fetchone())
-    view["token_issued"] = True  # 토큰 값은 응답에 넣지 않는다. 서버의 device-tokens.txt 에서 확인.
+    view["provisioning"] = provisioning(d, token, srt_pass)
     return view
+
+
+@app.delete("/api/devices/{device_id}")
+def delete_device(device_id: str, user: str = Depends(dashboard_user)):
+    """장치 삭제: 장치 토큰·송출 계정·ROI·적용 상태를 지운다. 이미 받은 사건과 사진·영상은 남긴다."""
+    with _db_lock, db() as conn:
+        row = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "장치가 없습니다.")
+        d = json.loads(row["data"])
+        removed_publisher = False
+        if d.get("srt_user"):  # 자동 등록한 장치만 송출 계정을 지운다 (수동 계정 jetson01 등은 건드리지 않음)
+            try:
+                removed_publisher = mediamtx_remove_publisher(d["srt_user"])
+            except Exception as err:  # noqa: BLE001
+                raise HTTPException(500, f"미디어 서버 설정에서 송출 계정을 지우지 못했습니다: {err}")
+        remove_device_token(device_id)
+        for table in ("devices", "device_config", "device_site_applied"):
+            conn.execute(f"DELETE FROM {table} WHERE device_id=?", (device_id,))
+        conn.execute("DELETE FROM heartbeats WHERE device_id=?", (device_id,))
+        conn.execute("UPDATE alerts SET resolved=1 WHERE device_id=? AND resolved=0", (device_id,))
+    _last_device_state.pop(device_id, None)
+    hub.publish("device_status", {"device_id": device_id, "status": "deleted", "previous": None})
+    return {"device_id": device_id, "deleted": True, "publisher_removed": removed_publisher, "by": user}
+
+
+@app.post("/api/devices/{device_id}/credentials")
+async def rotate_credentials(device_id: str, user: str = Depends(dashboard_user)):
+    """젯슨 설정값을 잃어버렸을 때: 장치 토큰과 SRT 송출 비밀번호를 새로 발급한다 (이전 값은 즉시 무효)."""
+    with _db_lock, db() as conn:
+        row = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "장치가 없습니다.")
+        d = json.loads(row["data"])
+        if not d.get("stream"):
+            raise HTTPException(422, "영상 경로가 없는 장치입니다.")
+        token = "cg_" + secrets.token_urlsafe(24)
+        srt_pass = secrets.token_urlsafe(12).replace("-", "x").replace("_", "y")
+        srt_user = d.get("srt_user") or device_id
+        try:
+            mediamtx_add_publisher(srt_user, d["stream"], srt_pass, replace=True)
+        except Exception as err:  # noqa: BLE001
+            raise HTTPException(500, f"미디어 서버 설정을 바꾸지 못했습니다: {err}")
+        if not d.get("srt_user"):
+            d["srt_user"] = srt_user
+            conn.execute("UPDATE devices SET data=? WHERE device_id=?", (json.dumps(d, ensure_ascii=False), device_id))
+        set_device_token(device_id, token)
+    return {"device_id": device_id, "provisioning": provisioning(d, token, srt_pass), "rotated_by": user, "rotated_at": iso(now_utc())}
 
 
 @app.post("/api/devices/{device_id}/maintenance")

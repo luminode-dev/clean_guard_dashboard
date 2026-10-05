@@ -1,10 +1,10 @@
-import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202610050606';
-import {LivePlayer} from './live.js?v=202610050606';
-import {createDemoApi} from './demo-api.js?v=202610050606';
-import {createServerApi} from './server-api.js?v=202610050606';
-import {connectEvents} from './realtime.js?v=202610050606';
-import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202610050606';
-import {mountSitePanel} from './site-panel.js?v=202610050606';
+import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202610050624';
+import {LivePlayer} from './live.js?v=202610050624';
+import {createDemoApi} from './demo-api.js?v=202610050624';
+import {createServerApi} from './server-api.js?v=202610050624';
+import {connectEvents} from './realtime.js?v=202610050624';
+import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202610050624';
+import {mountSitePanel} from './site-panel.js?v=202610050624';
 const config=window.CLEAN_GUARD_CONFIG||{};
 const demo=createDemoApi({storage:window.localStorage});
 const serverApi=createServerApi({config,storage:window.localStorage});
@@ -142,7 +142,8 @@ async function openDevice(id){
  try{
  const d=devices.find(d=>d.device_id===id);if(!d)return;
  const [s,uptime,roi]=await Promise.all([api('/api/devices/'+id+'/stream'),api('/api/devices/'+id+'/uptime'),api('/api/devices/'+encodeURIComponent(id)+'/roi').catch(()=>null)]);const h=d.heartbeat;
- showDialog(d.site?.name||d.name,'DEVICE MONITORING',`<div class="detail-grid"><div><div class="evidence" id="device-evidence">${s.thumbnail?.url?`<img id="detail-thumb" src="${esc(s.thumbnail.url)}" alt="모자이크 썸네일">`:icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>'}</div><p class="evidence-caption" id="live-message">${s.live&&s.video&&!s.video.publishing?'젯슨이 지금 영상을 보내지 않습니다 · 송출이 시작되면 연결할 수 있습니다.':s.live?'라이브 연결 가능 · '+esc(s.live.stream||'')+' ('+esc((s.live.protocol||'webrtc').toUpperCase())+') · 장치 상세에서만 연결합니다.':'미디어 서버 주소가 등록되지 않았습니다. config.js 의 live.base 와 장치 stream 을 확인하세요.'}</p>${s.live?'<button class="primary" id="start-live">라이브 영상 연결</button>':''}<div class="detail-section roi-section" id="roi-section"></div><div class="detail-section roi-section" id="site-section"></div></div><div><div style="margin-bottom:20px"><span id="device-status">${badge(d.status)}</span> ${context.demo&&d.demo?'<span class="demo-label">모의 하트비트</span>':''}</div><dl class="detail-facts"><dt>장치 시각</dt><dd>${fmtDate(d.last_heartbeat_at,true)}</dd><dt>서버 수신</dt><dd id="device-seen">${seenText(d)}</dd><dt>영상 송출</dt><dd id="device-video">${videoText(s.video??d.video)}</dd><dt>FPS</dt><dd>${h?.pipeline?.fps??'—'}</dd><dt>CPU / GPU</dt><dd>${h?.system?.cpu_pct??'—'}% / ${h?.system?.gpu_pct??'—'}%</dd><dt>GPU 온도</dt><dd>${h?.system?.temp_c?.gpu??'—'}°C</dd><dt>디스크 여유</dt><dd>${h?.system?.disk_free_mb??'—'} MB</dd><dt>방송 워커</dt><dd>${esc(h?.tts?.worker||'미수신')}</dd><dt>합성 지연</dt><dd>${h?.tts?.last_synth_ms??'—'} ms</dd><dt>관측 구간 정상률</dt><dd>${uptime.device_uptime_pct==null?'—':uptime.device_uptime_pct.toFixed(1)+'%'}<small class="cell-sub">오늘 ${Math.round(uptime.observed_seconds/60)}분 관측 · 미관측 구간 제외</small></dd><dt>이상 항목</dt><dd>${esc(h?.issues?.join(', ')||'없음')}</dd></dl><button id="maintenance-button" class="button">${d.maintenance?'점검 종료':'점검 모드로 전환'}</button><p class="footnote" style="padding:12px 0">점검 중에는 장치 장애 알림을 억제합니다.</p></div></div>`);
+ showDialog(d.site?.name||d.name,'DEVICE MONITORING',`<div class="detail-grid"><div><div class="evidence" id="device-evidence">${s.thumbnail?.url?`<img id="detail-thumb" src="${esc(s.thumbnail.url)}" alt="모자이크 썸네일">`:icon('camera')+'<p>영상 미연결 · 썸네일 대기</p>'}</div><p class="evidence-caption" id="live-message">${s.live&&s.video&&!s.video.publishing?'젯슨이 지금 영상을 보내지 않습니다 · 송출이 시작되면 연결할 수 있습니다.':s.live?'라이브 연결 가능 · '+esc(s.live.stream||'')+' ('+esc((s.live.protocol||'webrtc').toUpperCase())+') · 장치 상세에서만 연결합니다.':'미디어 서버 주소가 등록되지 않았습니다. config.js 의 live.base 와 장치 stream 을 확인하세요.'}</p>${s.live?'<button class="primary" id="start-live">라이브 영상 연결</button>':''}<div class="detail-section roi-section" id="roi-section"></div><div class="detail-section roi-section" id="site-section"></div></div><div><div style="margin-bottom:20px"><span id="device-status">${badge(d.status)}</span> ${context.demo&&d.demo?'<span class="demo-label">모의 하트비트</span>':''}</div><dl class="detail-facts"><dt>장치 시각</dt><dd>${fmtDate(d.last_heartbeat_at,true)}</dd><dt>서버 수신</dt><dd id="device-seen">${seenText(d)}</dd><dt>영상 송출</dt><dd id="device-video">${videoText(s.video??d.video)}</dd><dt>FPS</dt><dd>${h?.pipeline?.fps??'—'}</dd><dt>CPU / GPU</dt><dd>${h?.system?.cpu_pct??'—'}% / ${h?.system?.gpu_pct??'—'}%</dd><dt>GPU 온도</dt><dd>${h?.system?.temp_c?.gpu??'—'}°C</dd><dt>디스크 여유</dt><dd>${h?.system?.disk_free_mb??'—'} MB</dd><dt>방송 워커</dt><dd>${esc(h?.tts?.worker||'미수신')}</dd><dt>합성 지연</dt><dd>${h?.tts?.last_synth_ms??'—'} ms</dd><dt>관측 구간 정상률</dt><dd>${uptime.device_uptime_pct==null?'—':uptime.device_uptime_pct.toFixed(1)+'%'}<small class="cell-sub">오늘 ${Math.round(uptime.observed_seconds/60)}분 관측 · 미관측 구간 제외</small></dd><dt>이상 항목</dt><dd>${esc(h?.issues?.join(', ')||'없음')}</dd></dl><button id="maintenance-button" class="button">${d.maintenance?'점검 종료':'점검 모드로 전환'}</button><p class="footnote" style="padding:12px 0">점검 중에는 장치 장애 알림을 억제합니다.</p>${serverMode?'<div class="device-admin"><button class="button" id="rotate-credentials">젯슨 설정값 재발급</button><button class="button danger" id="delete-device">장치 삭제</button></div>':''}</div></div>`);
+ $('#rotate-credentials')?.addEventListener('click',()=>rotateCredentials(id));$('#delete-device')?.addEventListener('click',()=>deleteDevice(d));
  $('#maintenance-button').onclick=async()=>{try{await send('/api/devices/'+id+'/maintenance',{enabled:!d.maintenance});toast('점검 상태가 변경되었습니다.');await load();await openDevice(id);}catch(e){toast(e.message);}};
 
  roiDoc=roi;roiDeviceId=id;deviceDialogId=id;renderRoiSection();attachRoi();
@@ -238,11 +239,42 @@ async function refreshOpenDevice(){
  if(!deviceDialogId)return;
  try{const list=await api('/api/devices');const d=list.find(x=>x.device_id===deviceDialogId);if(d){const i=devices.findIndex(x=>x.device_id===d.device_id);if(i>=0)devices[i]=d;applyDeviceStatus({device_id:d.device_id,status:d.status,video:d.video,last_received_at:d.last_received_at,last_seen_s:d.last_seen_s});}}catch{}
 }
+// ---------- 지점·장치 등록 (운영 서버: 장치 등록 한 번으로 토큰·영상 경로·송출 계정까지 자동 준비)
+function nextId(prefix,items,key){let n=1;const used=new Set(items.map(x=>x[key]));while(used.has(prefix+String(n).padStart(4,'0')))n++;return prefix+String(n).padStart(4,'0');}
 function registration(kind){
  eventDialogId=null;deviceDialogId=null;
  const site=kind==='site';
- showDialog(site?'설치 지점 등록':'장치 등록','REGISTER',`<form id="registration-form" class="registration">${site?'<label>지점 ID<input name="site_id" required pattern="[A-Za-z0-9_-]+" placeholder="SITE-GN-0009"></label><label>지점명<input name="name" required></label><label class="full">주소<input name="address" required></label><label>위도<input name="lat" type="number" step="any" min="-90" max="90" required></label><label>경도<input name="lng" type="number" step="any" min="-180" max="180" required></label><label>행정동<input name="dong" required></label><label>행정동 코드<input name="code" required></label><label>시도<input name="sido" placeholder="예: 서울특별시" required></label><label>시군구<input name="sigungu" placeholder="예: 강남구" required></label>':`<label>장치 ID<input name="device_id" required pattern="[A-Za-z0-9_-]+" placeholder="JT-GN-0009"></label><label>장치명<input name="name" required></label><label class="full">설치 지점<select name="site_id" required>${options(sites,'','지점 선택')}</select></label><label class="full">시연용 장치 토큰 (실제 비밀값 입력 금지)<input name="token" type="password" minlength="16" maxlength="100" required autocomplete="new-password"></label><p class="footnote full">화면 동작 확인용 등록입니다. 장치 연결이나 인증은 수행하지 않으며 입력한 토큰도 저장하지 않습니다.</p>`}<p id="registration-error" class="error full" role="alert"></p><button type="submit" class="primary full">등록하기</button></form>`);
- $('#registration-form').onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.target)),button=$('button[type="submit"]',e.target);button.disabled=true;try{const body=site?{site_id:f.site_id,name:f.name,address:f.address,location:{lat:Number(f.lat),lng:Number(f.lng)},region:{sido:f.sido,sigungu:f.sigungu,dong:f.dong,code:f.code}}:f;await send(site?'/api/sites':'/api/devices',body);closeDialog();toast('등록되었습니다.');await load();}catch(error){$('#registration-error').textContent=error.message;}finally{button.disabled=false;}};
+ const siteForm=`<label>지점 ID<input name="site_id" required pattern="[A-Za-z0-9_-]+" value="${esc(nextId('SITE-GN-',sites,'site_id'))}"></label><label>지점명<input name="name" required placeholder="예: 역삼1동 수거함 앞"></label><label class="full">주소 (선택)<input name="address" placeholder="도로명 또는 지번 주소"></label><p class="footnote full">좌표와 지도 위치는 등록 후 장치 상세의 <b>설치 위치</b>에서 주소 검색·GPS 좌표·지도로 지정할 수 있습니다.</p>`;
+ const deviceForm=`<label>장치 ID<input name="device_id" required pattern="[A-Za-z0-9_-]{2,40}" value="${esc(nextId('JT-GN-',devices,'device_id'))}"></label><label>장치명<input name="name" required placeholder="예: 젯슨 2호기"></label><label class="full">설치 지점<select name="site_id" required>${options(sites,'','지점 선택')}</select></label>${serverMode?`<label>영상 경로 (선택)<input name="stream" pattern="site\\d+_cam\\d+" placeholder="비워 두면 자동 (site02_cam1 등)"></label><label>장치 토큰 (선택)<input name="token" type="password" minlength="16" maxlength="100" autocomplete="new-password" placeholder="비워 두면 서버가 생성"></label><p class="footnote full">등록하면 서버가 장치 토큰, 영상 경로, SRT 송출 계정을 만들고 미디어 서버에 바로 적용합니다. 젯슨에 넣을 값은 등록 직후 <b>한 번만</b> 보여 줍니다.</p>`:`<label class="full">시연용 장치 토큰 (실제 비밀값 입력 금지)<input name="token" type="password" minlength="16" maxlength="100" required autocomplete="new-password"></label><p class="footnote full">시연 모드에서는 화면 동작만 확인합니다. 장치 연결이나 인증은 수행하지 않으며 입력한 토큰도 저장하지 않습니다.</p>`}`;
+ showDialog(site?'설치 지점 등록':'장치 등록','REGISTER',`<form id="registration-form" class="registration">${site?siteForm:deviceForm}<p id="registration-error" class="error full" role="alert"></p><button type="submit" class="primary full">등록하기</button></form>`);
+ $('#registration-form').onsubmit=async e=>{
+  e.preventDefault();const f=Object.fromEntries(new FormData(e.target)),button=$('button[type="submit"]',e.target);button.disabled=true;
+  try{
+   const body=site?{site_id:f.site_id.trim(),name:f.name.trim(),address:(f.address||'').trim()}:{device_id:f.device_id.trim(),name:f.name.trim(),site_id:f.site_id,...(f.stream?{stream:f.stream.trim()}:{}),...(f.token?{token:f.token}:{})};
+   const result=await send(site?'/api/sites':'/api/devices',body);
+   await load();
+   if(!site&&result?.provisioning)showProvisioning(result.provisioning,'장치 등록 완료');
+   else{closeDialog();toast(site?'지점을 등록했습니다. 장치 상세의 설치 위치에서 지도 위치를 지정하세요.':'등록되었습니다.');}
+  }catch(error){$('#registration-error').textContent=error.message;}finally{button.disabled=false;}
+ };
+}
+// 젯슨에 넣을 값 (한 번만 표시). 닫으면 다시 볼 수 없고, 잃어버리면 장치 상세에서 재발급
+function showProvisioning(p,title){
+ const row=(label,value,secret)=>`<div class="prov-row"><span>${label}</span><code class="${secret?'secret':''}">${esc(value)}</code><button class="button prov-copy" type="button" data-copy="${esc(value)}">복사</button></div>`;
+ showDialog(title,'JETSON SETUP',`<div class="prov-warn">이 값들은 <b>지금 한 번만</b> 표시됩니다. 창을 닫기 전에 젯슨에 옮기거나 안전한 곳에 보관하세요. 잃어버리면 장치 상세의 <b>젯슨 설정값 재발급</b>으로 새로 받을 수 있습니다(이전 값은 무효).</div>
+  ${row('장치 ID',p.device_id)}${row('지점 ID',p.site_id||'')}${row('영상 경로',p.stream)}${row('API 주소',p.api_base||'')}${row('장비 토큰',p.device_token,true)}${row('SRT 송출 주소',p.srt_url,true)}
+  <h3 class="prov-h">젯슨 환경 변수로 한 번에 붙여 넣기</h3><pre class="prov-env">${esc(p.env)}</pre><div class="roi-actions"><button class="primary prov-copy" type="button" data-copy="${esc(p.env)}">환경 변수 전체 복사</button><button class="button" type="button" id="prov-done">보관했습니다 · 닫기</button></div>`);
+ $('#dialog-body').querySelectorAll('.prov-copy').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);const t=b.textContent;b.textContent='복사됨';setTimeout(()=>b.textContent=t,1500);}catch{toast('복사하지 못했습니다. 직접 선택해 복사하세요.');}});
+ $('#prov-done').onclick=()=>{if(window.confirm('젯슨 설정값을 보관했나요? 닫으면 다시 볼 수 없습니다.'))closeDialog();};
+}
+async function rotateCredentials(id){
+ if(!window.confirm('장비 토큰과 SRT 송출 비밀번호를 새로 발급할까요?\n이전 값은 즉시 무효가 되어, 젯슨에 새 값을 넣을 때까지 연결이 끊깁니다.'))return;
+ try{const r=await send('/api/devices/'+encodeURIComponent(id)+'/credentials');showProvisioning(r.provisioning,'젯슨 설정값 재발급');}catch(e){toast(e.message);}
+}
+async function deleteDevice(d){
+ const typed=window.prompt(`장치를 삭제하면 장비 토큰과 송출 계정이 지워지고 이 장치는 더 이상 연결할 수 없습니다.\n이미 받은 사건·사진·영상은 남습니다.\n\n삭제하려면 장치 ID(${d.device_id})를 입력하세요.`);
+ if(typed===null)return;if(typed.trim()!==d.device_id){toast('장치 ID가 일치하지 않아 삭제하지 않았습니다.');return;}
+ try{await api('/api/devices/'+encodeURIComponent(d.device_id),{method:'DELETE'});closeDialog();toast(d.device_id+' 장치를 삭제했습니다.');await load();}catch(e){toast(e.message);}
 }
 function navigate(){const target=location.hash.slice(1)||'overview';page=Object.hasOwn(descriptions,target)?target:'overview';const [eyebrow,title,description]=descriptions[page];$('#page-eyebrow').textContent=eyebrow;$('#page-title').textContent=title;$('#breadcrumb-title').textContent=title;$('#page-description').textContent=description;document.title='Clean Guard · '+title;document.querySelectorAll('nav [data-page]').forEach(a=>a.classList.toggle('active',a.dataset.page===page));content.innerHTML='<div class="loading">관제 데이터를 불러오고 있습니다…</div>';load();}
 document.addEventListener('click',async e=>{
