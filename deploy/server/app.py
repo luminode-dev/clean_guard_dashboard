@@ -633,15 +633,54 @@ def clip_window(e: dict) -> tuple[datetime, datetime, str | None]:
     return anchor - timedelta(seconds=c["pre_s"]), anchor + timedelta(seconds=c["post_s"]), note
 
 
-def set_clip_state(event_id: str, **fields) -> dict | None:
+def set_clip_state(event_id: str, unless_clip: bool = False, **fields) -> dict | None:
+    """unless_clip=True 면 그 사이 젯슨이 클립을 올린 경우 덮어쓰지 않는다 (서버 추출은 대체 수단)."""
     with _db_lock, db() as conn:
         row = conn.execute("SELECT data FROM events WHERE event_id=?", (event_id,)).fetchone()
         if not row:
             return None  # 그 사이 보존 규칙으로 삭제됨
         e = json.loads(row["data"])
+        if unless_clip and (e.get("media") or {}).get("clip"):
+            return e
         e.setdefault("media", {}).update(fields)
         save_event(conn, e)
         return e
+
+
+FFMPEG = os.environ.get("CLEAN_GUARD_FFMPEG", r"C:\server\ffmpeg\ffmpeg.exe")
+
+
+def trim_clip(path: Path, offset_s: float, duration_s: float) -> float | None:
+    """재인코딩 없이 [offset, offset+duration] 만 남긴다. 성공하면 남은 길이(초), 실패하면 None (원본 유지)."""
+    import subprocess
+    if not Path(FFMPEG).exists():
+        return None
+    out = path.with_name(path.stem + ".trim.mp4")
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, offset_s):.3f}", "-i", str(path),
+           "-t", f"{duration_s:.3f}", "-map", "0", "-c", "copy", "-movflags", "+faststart", "-avoid_negative_ts", "make_zero", str(out)]
+    try:
+        subprocess.run(cmd, check=True, timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if out.stat().st_size < 1024:
+            raise RuntimeError("empty output")
+        probe = subprocess.run([str(Path(FFMPEG).with_name("ffprobe.exe")), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
+                               capture_output=True, text=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        os.replace(out, path)
+        return float(probe.stdout.strip() or 0) or duration_s
+    except Exception as err:  # noqa: BLE001
+        print("clip trim failed:", err)
+        out.unlink(missing_ok=True)
+        return None
+
+
+def device_clip_window(e: dict) -> tuple[float, float]:
+    """젯슨 클립(clip_range_s = 사건 시각 기준 시작·끝 초)에서 설정된 앞뒤 구간의 파일 내 offset 과 길이."""
+    c = clip_cfg()
+    rng = (e.get("media") or {}).get("clip_range_s") or [-c["pre_s"], c["post_s"]]
+    try:
+        start_rel = float(rng[0])
+    except (TypeError, ValueError, IndexError):
+        start_rel = -float(c["pre_s"])
+    return max(0.0, -float(c["pre_s"]) - start_rel), float(c["pre_s"]) + float(c["post_s"])
 
 
 def fetch_playback(stream: str, start: datetime, duration: float) -> tuple[int, bytes]:
@@ -699,7 +738,7 @@ async def make_clip(event_id: str) -> None:
         await asyncio.sleep(5 + attempt * 5)
     if status_code != 200 or len(data) <= 1024:
         reason = "해당 시각에 서버로 들어온 영상이 없습니다 (젯슨 송출 끊김)." if status_code == 404 else f"클립 추출 실패 (재생 서버 응답 {status_code})."
-        set_clip_state(event_id, clip_status="missing", clip_note=reason)
+        set_clip_state(event_id, unless_clip=True, clip_status="missing", clip_note=reason)
         hub.publish("event_update", {"event_id": event_id, "update": "media", "clip_status": "missing"})
         return
     covered = await asyncio.to_thread(buffer_coverage, stream, start, end)
@@ -709,6 +748,10 @@ async def make_clip(event_id: str) -> None:
         note = f"{note} {partial}" if note else partial
     folder = media_folder(e)
     folder.mkdir(parents=True, exist_ok=True)
+    with db() as conn:  # 기다리는 사이 젯슨이 클립을 올렸으면 그걸 쓴다
+        latest = conn.execute("SELECT data FROM events WHERE event_id=?", (event_id,)).fetchone()
+    if latest and (json.loads(latest["data"]).get("media") or {}).get("clip"):
+        return
     tmp = folder / "clip.mp4.tmp"
     tmp.write_bytes(data)
     os.replace(tmp, folder / "clip.mp4")
@@ -837,6 +880,13 @@ async def event_media(event_id: str, device_id: str = Depends(device_auth), snap
         if "clip" in saved:
             e["media"]["clip"] = saved["clip"]
             e["media"]["clip_status"], e["media"]["clip_source"], e["media"]["clip_note"] = "ready", "device", None
+            # 젯슨 클립을 설정된 앞뒤 구간(기본 5초+5초)으로 잘라 보관 (응답의 size/sha256 은 젯슨이 보낸 원본 기준)
+            offset, dur = device_clip_window(e)
+            kept = trim_clip(folder / "clip.mp4", offset, dur)
+            if kept is not None:
+                ts = parse_ts(e["ts"])
+                e["media"]["clip_range"] = [iso(ts - timedelta(seconds=clip_cfg()["pre_s"])), iso(ts + timedelta(seconds=clip_cfg()["post_s"]))]
+                e["media"]["clip_size"] = (folder / "clip.mp4").stat().st_size
         if "snapshot_raw" in saved:
             e["media"]["snapshot_raw"] = saved["snapshot_raw"]  # 조회 API 에서는 숨기고 /raw 로만 발급
         e["media"]["pending"] = {k: v for k, v in (e["media"].get("pending") or {}).items() if k not in saved}
