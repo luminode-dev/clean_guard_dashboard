@@ -2,6 +2,8 @@
 // 위치를 정하는 방법: 주소 검색 / 위도·경도 직접 입력 / 지도 클릭·마커 드래그 / 젯슨이 보고한 GPS
 export const SITE_STATES={none:['maintenance','위치 미설정'],pending:['new','젯슨 전달 대기'],applied:['online','젯슨 적용됨'],failed:['offline','적용 실패']};
 const DEFAULT_VIEW=[36.4,127.9],DEFAULT_ZOOM=7;
+// Leaflet 기본 핀은 이미지 파일(marker-icon.png)이 필요해 깨지므로 CSS 로 그린 핀을 쓴다. 핀 끝(아래 꼭짓점)이 좌표 위치
+const pinIcon=editing=>window.L.divIcon({className:'site-pin-wrap',html:'<span class="site-pin'+(editing?' editing':'')+'"><i></i></span>',iconSize:[28,36],iconAnchor:[14,35]});
 
 export function parseCoord(v){const n=Number(String(v??'').trim());return Number.isFinite(n)&&String(v??'').trim()!==''?n:null;}
 // "37.5, 127.03" 처럼 한 칸에 붙여 넣은 좌표도 받는다 (지도 앱에서 복사한 형식)
@@ -104,7 +106,7 @@ export function mountSitePanel({box,device,api,toast,esc,fmtDate,badge,demo,onSa
  function placeMarker(pan){
   if(!state.map)return;const l=loc();if(!l||!validLocation(l.lat,l.lng))return;
   if(state.marker)state.marker.setLatLng([l.lat,l.lng]);
-  else{state.marker=L.marker([l.lat,l.lng],{draggable:state.editing}).addTo(state.map);
+  else{state.marker=L.marker([l.lat,l.lng],{draggable:state.editing,icon:pinIcon(state.editing),keyboard:false}).addTo(state.map);
    if(state.editing)state.marker.on('dragend',()=>{const p=state.marker.getLatLng(),f=state.form;f.lat=+p.lat.toFixed(7);f.lng=+p.lng.toFixed(7);f.source='map';box.querySelector('#site-lat').value=f.lat;box.querySelector('#site-lng').value=f.lng;});}
   if(pan)state.map.setView([l.lat,l.lng],Math.max(state.map.getZoom(),17));
  }
