@@ -1,10 +1,10 @@
-import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js';
-import {LivePlayer} from './live.js';
-import {createDemoApi} from './demo-api.js';
-import {createServerApi} from './server-api.js';
-import {connectEvents} from './realtime.js';
-import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js';
-import {mountSitePanel} from './site-panel.js';
+import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202610050606';
+import {LivePlayer} from './live.js?v=202610050606';
+import {createDemoApi} from './demo-api.js?v=202610050606';
+import {createServerApi} from './server-api.js?v=202610050606';
+import {connectEvents} from './realtime.js?v=202610050606';
+import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202610050606';
+import {mountSitePanel} from './site-panel.js?v=202610050606';
 const config=window.CLEAN_GUARD_CONFIG||{};
 const demo=createDemoApi({storage:window.localStorage});
 const serverApi=createServerApi({config,storage:window.localStorage});

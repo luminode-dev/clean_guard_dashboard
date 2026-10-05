@@ -58,6 +58,8 @@ npm start -- --api https://cleanguard.duckdns.org
 
 ### 3. 운영 배포 (Caddy · MediaMTX · FastAPI)
 
+배포 전에 `npm run stamp` 을 실행하면 index.html 과 assets 의 import 경로에 `?v=<시각>` 이 붙어, 이미 열려 있던 브라우저 탭도 새로고침 한 번으로 새 스크립트를 받습니다.
+
 `index.html`과 `assets/`를 서버의 `C:\server\dashboard`에 복사하고, `deploy/Caddyfile.example`을 참고해 `C:\server\caddy\Caddyfile`에서 정적 파일 + `/api/*`, `/ws/*` 프록시 + Basic Auth를 구성합니다. 수집·조회 API 는 `deploy/server/app.py`(FastAPI, 127.0.0.1:8010) 로, 서버의 `C:serverapp` 배포본 사본입니다. 젯슨 → 서버 계약과 대시보드 → 서버 계약을 모두 구현하므로 대시보드는 파생 계산 없이 서버 응답을 그대로 씁니다. `deploy/mediamtx.example.yml`은 서버에 실제 배포한 `C:servermediamtxmediamtx.yml`과 같은 구성(SRT 8890 수신, WebRTC 8889/8189, jetson01 송출·viewer 시청 계정)입니다. 서버 배포본의 `config.js`에는 viewer 계정을 넣어 두었고, 저장소의 `config.js`는 비워 둡니다.
 
 ### 서버 API 계약
@@ -98,6 +100,7 @@ assets/roi-editor.js   ROI 다각형 편집기 (캔버스 오버레이, 0~1 정�
 assets/site-panel.js   설치 위치 패널 (주소 검색, 좌표 입력, 지도 지정, 젯슨 GPS, 적용 상태)
 assets/vendor/         Leaflet, hls.js 및 라이선스
 scripts/serve.mjs      개발용 정적 파일 서버 + API/WS 프록시
+scripts/stamp.mjs      배포용 자산 버전 스탬프 (npm run stamp)
 deploy/                Caddy, MediaMTX 설정 예시 · server/ (FastAPI 수집·조회 API 배포본)
 tests/                 시연 데이터 · 서버 어댑터 · 실시간 수신 테스트
 ```

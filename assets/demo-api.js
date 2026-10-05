@@ -1,4 +1,4 @@
-import {validateZones} from './roi-editor.js';
+import {validateZones} from './roi-editor.js?v=202610050606';
 const KEY='clean-guard-ui-demo-v1';
 const copy=v=>structuredClone(v);
 export const day=v=>new Date(new Date(v).getTime()+32400000).toISOString().slice(0,10);

@@ -1,7 +1,7 @@
 // 실제 서버(Caddy → FastAPI) 연결 어댑터.
 // app.js 는 demo-api.js 와 같은 request(url, options) 계약만 사용하므로, 여기서 서버 응답을 화면 모델로 맞춥니다.
 // 서버가 아직 제공하지 않는 조회 엔드포인트(404)는 /api/events 목록으로 파생 계산합니다.
-import {summary,day,hour} from './demo-api.js';
+import {summary,day,hour} from './demo-api.js?v=202610050606';
 
 const DEFAULTS={mode:'auto',apiBase:'',wsPath:'/ws/events',mediaBase:'/snapshots',live:{protocol:'webrtc'},sites:[],devices:[],auth:null};
 const STATES=['new','reviewing','confirmed','actioned','dismissed'];

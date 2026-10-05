@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Clean Guard standalone dashboard frontend",
-  "scripts": { "start": "node scripts/serve.mjs", "test": "node --test tests/*.test.js" },
-  "engines": { "node": ">=20" }
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "test": "node --test tests/*.test.js",
+    "stamp": "node scripts/stamp.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }
