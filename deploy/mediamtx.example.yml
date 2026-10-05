@@ -53,7 +53,7 @@ authInternalUsers:
     pass: 뷰어비번
     permissions:
       - action: read
-        path: ~^sited+_camd+$
+        path: ~^site\d+_cam\d+$
   # 로컬 API/메트릭
   - user: any
     ips: ["127.0.0.1", "::1"]
@@ -64,7 +64,7 @@ authInternalUsers:
 
 paths:
   # 모든 카메라 경로(site01_cam1, site02_cam1, …)에 같은 설정 → 장치를 추가해도 고치지 않는다
-  ~^sited+_camd+$:
+  ~^site\d+_cam\d+$:
     source: publisher
     # 사건 클립용 순환 버퍼: 최근 30분만 1분 단위로 보관하고 계속 삭제 (720p 1.5 Mbps 기준 약 330 MB)
     record: yes

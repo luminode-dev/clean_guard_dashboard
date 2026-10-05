@@ -32,32 +32,7 @@
 3. MediaMTX 장치별 송출 계정을 `mediamtx.yml` 의 `CLEAN_GUARD_DEVICE_USERS` 구역에 추가 → MediaMTX 가 파일 변경을 감지해 자동 재적용. 계정은 자기 경로에만 송출 가능
 4. 응답 `provisioning` 에 젯슨 설정값(장치 ID·토큰·SRT 주소·환경 변수 묶음)을 **한 번만** 담아 화면에 표시
 
-경로·순환 녹화·시청 권한은 정규식(`~^sited+_camd+# Clean Guard 수집·조회 API (FastAPI) — 서버 배포본 사본
-
-`C:\server\app\` 에 실제로 배포된 파일의 사본입니다. 서버에서 수정하면 여기에도 복사해 두세요.
-
-| 파일 | 역할 |
-|---|---|
-| `app.py` | FastAPI 앱 전체 (장치 수집 API + 대시보드 조회·처리 API + `/ws/events`) |
-| `requirements.txt` | fastapi, uvicorn[standard], python-multipart |
-| `settings.example.json` | `settings.json` 예시 (대시보드 계정, 도메인, 초기 지점·장치) |
-| `run-app.cmd` | 실행 스크립트 · `C:\server\app\python\python.exe -m uvicorn app:app --port 8010` |
-| `setup-admin.ps1` | 관리자 권한으로 부팅 시 자동 실행 작업(`CleanGuardAPI`) 등록 |
-
-서버에는 임베디드 Python 3.12 를 `C:\server\app\python\` 에 두고 pip 로 requirements 를 설치했습니다. 장비 토큰은 `C:\server\app\device-tokens.txt`(`device_id=token` 한 줄씩), 데이터는 `events.db`(SQLite), 파일은 `snapshots\`(Caddy 가 `/snapshots/*` 로 공개).
-
-## 저장·보존 규칙
-
-- 서버는 **사건 증거만** 저장합니다(스냅샷·원본 스냅샷·전후 클립, `snapshots날짜사건ID`). 상시 녹화(MediaMTX record)는 켜지 않습니다. 실시간 영상은 지나가기만 하고, 상시 녹화 원본은 젯슨 NVMe 에 남습니다.
-- 사건 수가 `settings.json` 의 `max_events`(기본 1000)를 넘으면 **먼저 들어온 사건(received_at 순)부터** DB 행, 미디어 폴더, 그 사건의 알림을 함께 삭제합니다. 처리 상태와 무관하게 순서대로 지웁니다. 새 사건이 들어올 때와 30초 감시 루프에서 검사합니다.
-- 1건당 스냅샷 2장(수백 KB) + 클립(720p 20초, 약 4 MB) 기준으로 1000건이면 약 5 GB 입니다.
-- 현재 건수와 상한은 `GET /api/context` 의 `retention` 으로 확인합니다.
-
-## ROI 원격 설정
-
-대시보드에서 그린 감시·제외 구역(0~1 정규화 다각형)을 `device_config` 테이블에 버전과 함께 저장합니다. 하트비트 응답의 `config.roi_version` 으로 젯슨에 알리고, 젯슨은 `GET /api/device/config` 로 받아 `config/roi.json` 에 저장한 뒤 `POST /api/device/config/ack` 로 결과를 보고합니다. 저장 시 `base_version` 이 다르면 409(동시 편집 방지). 적용 상태(`none|pending|applied|failed`)는 `/ws/events` 의 `device_config` 메시지로 대시보드에 실시간 반영됩니다.
-
-) 하나로 모든 카메라에 적용되므로 장치를 추가해도 고칠 필요가 없습니다. 분실 시 `POST /api/devices/{id}/credentials` 로 토큰과 SRT 비밀번호를 재발급(이전 값 즉시 무효), `DELETE /api/devices/{id}` 로 장치·토큰·송출 계정을 삭제합니다(이미 받은 사건과 미디어는 유지).
+경로·순환 녹화·시청 권한은 정규식(`~^site\d+_cam\d+$`) 하나로 모든 카메라에 적용되므로 장치를 추가해도 고칠 필요가 없습니다. 분실 시 `POST /api/devices/{id}/credentials` 로 토큰과 SRT 비밀번호를 재발급(이전 값 즉시 무효), `DELETE /api/devices/{id}` 로 장치·토큰·송출 계정을 삭제합니다(이미 받은 사건과 미디어는 유지).
 
 ## 방송 음성
 
