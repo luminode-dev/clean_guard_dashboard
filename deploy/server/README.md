@@ -23,6 +23,10 @@
 
 대시보드에서 그린 감시·제외 구역(0~1 정규화 다각형)을 `device_config` 테이블에 버전과 함께 저장합니다. 하트비트 응답의 `config.roi_version` 으로 젯슨에 알리고, 젯슨은 `GET /api/device/config` 로 받아 `config/roi.json` 에 저장한 뒤 `POST /api/device/config/ack` 로 결과를 보고합니다. 저장 시 `base_version` 이 다르면 409(동시 편집 방지). 적용 상태(`none|pending|applied|failed`)는 `/ws/events` 의 `device_config` 메시지로 대시보드에 실시간 반영됩니다.
 
+## 방송 음성
+
+미디어 업로드의 `announce_audio` 파트로 젯슨이 방송한 TTS 음성(WAV, RIFF/WAVE 헤더 확인, 10 MB 이하, 아니면 415)을 받아 사건 폴더의 `announce.wav` 로 저장합니다. `media.announce_audio`(URL)와 `announce_audio_s`(재생 길이)가 사건에 붙고, 대시보드 사건 상세와 목록 방송 칸에서 재생됩니다. 사건과 함께 1000건 보존 규칙으로 지워집니다.
+
 ## 설치 위치 원격 설정
 
 대시보드 장치 상세의 설치 위치에서 지점명·주소·좌표를 저장하면(`PUT /api/sites/{site_id}`, `base_version` 충돌 시 409) 지점 `version` 이 올라가고, 하트비트 응답 `config.site_version` 으로 젯슨에 알립니다. 젯슨은 `GET /api/device/config` 의 `site` 를 `config/site.json` 에 저장하고 `POST /api/device/config/ack` 에 `site_version` 으로 보고합니다(적용 상태는 `device_site_applied` 테이블). 주소 검색은 `GET /api/geocode?q=`, 좌표→주소는 `GET /api/geocode/reverse` 로 서버가 OpenStreetMap Nominatim 을 대신 호출합니다(초당 1회, 결과 캐시). 하트비트에 `gps` 가 오면 장치에 저장되어 편집 화면에서 "젯슨 GPS 위치 사용" 으로 쓸 수 있습니다.

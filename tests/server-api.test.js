@@ -196,3 +196,11 @@ test('wsUrl carries config auth as a query parameter for browsers',()=>{
  const withAuth=createServerApi({config:{...config,auth:{user:'admin',pass:'admin'}}});
  assert.equal(withAuth.wsUrl({origin:'https://sub.duckdns.org'}),'wss://sub.duckdns.org/ws/events?auth='+encodeURIComponent(Buffer.from('admin:admin').toString('base64')));
 });
+
+test('announce audio (WAV) is passed through to the dashboard event model',async()=>{
+ const {api}=make({events:[{...specEvent,media:{...specEvent.media,announce_audio:'/snapshots/2026-10-05/E1/announce.wav',announce_audio_s:4.2}}]});
+ const e=(await api.request('/api/events')).items[0];
+ assert.equal(e.media.announce_audio,'/snapshots/2026-10-05/E1/announce.wav');
+ assert.equal(e.media.announce_audio_s,4.2);
+ const {api:none}=make();assert.equal((await none.request('/api/events')).items[0].media.announce_audio,null);
+});

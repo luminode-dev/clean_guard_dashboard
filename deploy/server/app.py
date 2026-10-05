@@ -704,6 +704,16 @@ def set_clip_state(event_id: str, unless_clip: bool = False, **fields) -> dict |
 FFMPEG = os.environ.get("CLEAN_GUARD_FFMPEG", r"C:\server\ffmpeg\ffmpeg.exe")
 
 
+def wav_duration(path: Path) -> float | None:
+    """WAV 재생 길이(초). 표준 PCM 이 아니면 None."""
+    import wave
+    try:
+        with wave.open(str(path), "rb") as w:
+            return round(w.getnframes() / float(w.getframerate()), 2)
+    except Exception:
+        return None
+
+
 def trim_clip(path: Path, offset_s: float, duration_s: float) -> float | None:
     """재인코딩 없이 [offset, offset+duration] 만 남긴다. 성공하면 남은 길이(초), 실패하면 None (원본 유지)."""
     import subprocess
@@ -906,7 +916,7 @@ async def event_update(event_id: str, request: Request, device_id: str = Depends
 
 
 @app.post("/api/events/{event_id}/media")
-async def event_media(event_id: str, device_id: str = Depends(device_auth), snapshot: UploadFile | None = File(None), snapshot_raw: UploadFile | None = File(None), clip: UploadFile | None = File(None)):
+async def event_media(event_id: str, device_id: str = Depends(device_auth), snapshot: UploadFile | None = File(None), snapshot_raw: UploadFile | None = File(None), clip: UploadFile | None = File(None), announce_audio: UploadFile | None = File(None)):
     with _db_lock, db() as conn:
         row = conn.execute("SELECT * FROM events WHERE event_id=?", (event_id,)).fetchone()
         if not row:
@@ -917,12 +927,18 @@ async def event_media(event_id: str, device_id: str = Depends(device_auth), snap
         folder = media_folder(e)
         folder.mkdir(parents=True, exist_ok=True)
         saved, files = {}, {}
-        for name, up, fname in (("snapshot", snapshot, "snapshot.jpg"), ("snapshot_raw", snapshot_raw, "snapshot_raw.jpg"), ("clip", clip, "clip.mp4")):
+        for name, up, fname in (("snapshot", snapshot, "snapshot.jpg"), ("snapshot_raw", snapshot_raw, "snapshot_raw.jpg"), ("clip", clip, "clip.mp4"), ("announce_audio", announce_audio, "announce.wav")):
             if up is None:
                 continue
             data = await up.read()
             if len(data) > 200 * 1024 * 1024:
                 raise HTTPException(413, f"{name} 파일이 너무 큽니다.")
+            if name == "announce_audio":
+                # 방송 음성은 WAV(RIFF/WAVE)만 받는다. 방송 1회 분량이라 10 MB 이하
+                if len(data) > 10 * 1024 * 1024:
+                    raise HTTPException(413, "방송 음성 파일이 너무 큽니다 (10 MB 초과).")
+                if not (len(data) > 44 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"):
+                    raise HTTPException(415, "announce_audio 는 WAV 파일(RIFF/WAVE)이어야 합니다.")
             tmp = folder / (fname + ".tmp")
             tmp.write_bytes(data)
             os.replace(tmp, folder / fname)
@@ -931,6 +947,9 @@ async def event_media(event_id: str, device_id: str = Depends(device_auth), snap
             files[name] = {"url": saved[name], "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
         if "snapshot" in saved:
             e["media"]["snapshot"] = saved["snapshot"]
+        if "announce_audio" in saved:
+            e["media"]["announce_audio"] = saved["announce_audio"]
+            e["media"]["announce_audio_s"] = wav_duration(folder / "announce.wav")
         if "clip" in saved:
             e["media"]["clip"] = saved["clip"]
             e["media"]["clip_status"], e["media"]["clip_source"], e["media"]["clip_note"] = "ready", "device", None
