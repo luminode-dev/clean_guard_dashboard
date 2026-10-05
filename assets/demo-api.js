@@ -64,6 +64,8 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
    if(/^\/api\/devices\/[^/]+\/uptime$/.test(path))return {device_uptime_pct:null,observed_seconds:0};
   }
   if(method==='PUT'){
+   const sitePut=path.match(/^\/api\/sites\/([^/]+)$/);
+   if(sitePut){const s=state.sites.find(x=>x.site_id===decodeURIComponent(sitePut[1]));check(s,'지점이 없습니다.');const cur=s.version||0;check((body.base_version??cur)===cur,'다른 사용자가 지점 정보를 먼저 수정했습니다. 다시 불러오세요.');check(String(body.name||'').trim(),'지점명을 입력하세요.');const l=body.location;check(l==null||(Number.isFinite(l.lat)&&Number.isFinite(l.lng)&&Math.abs(l.lat)<=90&&Math.abs(l.lng)<=180),'위도는 -90~90, 경도는 -180~180 사이 숫자여야 합니다.');Object.assign(s,{name:body.name.trim(),address:body.address||'',location:l?{lat:l.lat,lng:l.lng}:null,location_source:body.location_source||'manual',version:cur+1,updated_at:now().toISOString(),updated_by:'시연 운영자'},body.region?{region:{...s.region,...body.region}}:{});const devs=Object.fromEntries(state.devices.filter(d=>d.site_id===s.site_id).map(d=>[d.device_id,{version:s.version,applied_version:s.version,apply_state:'applied',apply_error:null}]));return {...copy(s),devices:devs};}
    const roiPut=path.match(/^\/api\/devices\/([^/]+)\/roi$/);
    if(roiPut){const id=decodeURIComponent(roiPut[1]);check(state.devices.some(d=>d.device_id===id),'장치가 없습니다.');const err=validateZones(body.zones);check(!err,err);const cur=(state.roi||{})[id];const version=(cur?.version||0);check((body.base_version??version)===version,'다른 사용자가 ROI 를 먼저 수정했습니다. 다시 불러오세요.');state.roi={...(state.roi||{}),[id]:{version:version+1,updated_at:now().toISOString(),updated_by:'시연 운영자',frame_ref:body.frame_ref||null,zones:copy(body.zones)}};return roiDoc(id);}
   }

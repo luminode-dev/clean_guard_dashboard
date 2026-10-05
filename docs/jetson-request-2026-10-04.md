@@ -16,7 +16,8 @@
 | 스냅샷 업로드 | 정상 · 44건, 업로드 81회 모두 성공 |
 | 회수 후속 보고 (`event_update`) | **미수신** · 0건 |
 | 사건 전후 클립 | 서버가 자동 생성 (2026-10-04 변경, 젯슨 작업 불필요) |
-| ROI 버전 보고 | **미구현** · 오늘 추가된 기능 |
+| ROI 원격 설정 | 구현 확인 (v4 적용, 2026-10-04) |
+| 설치 위치 원격 설정 (`site_version`) | **미구현** · 2026-10-05 추가 (6번 항목) |
 | 썸네일 | 수신 시작 (2026-10-04 16:04 확인) |
 
 요청 사항은 우선순위 순입니다.
@@ -191,6 +192,56 @@ Content-Type: image/jpeg
 (본문: JPEG 바이트, 640×360 권장, 5 MB 이하)
 ```
 
+## 6. [신규] 설치 위치 원격 설정 (config/site.json) — 서버 구현 완료 2026-10-05
+
+운영자가 대시보드 장치 상세의 **설치 위치**에서 지점명·주소·GPS 좌표를 정하면, ROI 와 같은 방식으로 다음 하트비트 응답을 통해 젯슨에 전달됩니다. 방송 문구의 장소 이름("역삼1동 수거함 앞에 …")과 사건의 위치 정보를 현장에서 따로 고칠 필요가 없어집니다.
+
+**흐름** (ROI 와 동일, 키 이름만 다름)
+
+1. 하트비트 본문 `config` 에 현재 적용 중인 `site_version` 을 넣습니다 (처음엔 0).
+   ```json
+   { "config": { "roi_version": 4, "site_version": 0 } }
+   ```
+2. 하트비트 응답에 서버 최신 버전이 옵니다: `"config": { "roi_version": 4, "site_version": 1 }`
+3. 응답 `site_version` 이 로컬보다 크면 `GET /api/device/config` 로 받아 응답의 `site` 를 **`config/site.json`** 에 원자적으로 저장합니다(임시 파일 → rename). 같은 응답에 `roi` 도 들어 있습니다.
+4. 결과 보고: `POST /api/device/config/ack` 에 `{"site_version": 1, "ok": true}` (ROI 와 함께 `{"roi_version": 4, "site_version": 1}` 로 보내도 됨). 실패하면 `{"site_version": 1, "ok": false, "error": "사유"}`.
+
+**config/site.json**
+
+```json
+{
+  "site_id": "SITE-GN-0001",
+  "name": "역삼1동 수거함 앞",
+  "address": "서울 강남구 테헤란로 152",
+  "location": { "lat": 37.5000191, "lng": 127.0365483 },
+  "region": { "sido": "서울특별시", "sigungu": "강남구", "dong": "역삼1동", "code": "" },
+  "version": 1,
+  "updated_at": "2026-10-05T04:34:22Z",
+  "updated_by": "admin",
+  "location_source": "address"
+}
+```
+
+| 필드 | 젯슨에서 쓰는 곳 |
+|---|---|
+| `name` | 방송 문구의 장소 이름 (`config.tts.location` 대신 사용 권장) |
+| `location.lat / lng` | 사건·하트비트에 위치 표기, 로그 (WGS84 십진수) |
+| `address`, `region` | 사건 메타데이터 (선택) |
+| `location_source` | `address` 주소 검색 · `gps` 좌표 입력 · `map` 지도 지정 · `device` 젯슨 GPS · `manual` |
+
+- `location` 이 `null` 이면 좌표 미지정입니다. 이전 값을 유지하지 말고 그대로 비워 두세요.
+- 서버에 연결되지 않아도 마지막 `config/site.json` 으로 동작합니다.
+
+**GPS 모듈이 있으면 (선택)**
+
+하트비트에 현재 GPS 를 실어 보내면 대시보드 설치 위치 편집 화면에 **"젯슨 GPS 위치 사용"** 버튼이 생깁니다. 운영자가 누르면 그 좌표가 지점 위치가 되고, 다시 `config/site.json` 으로 내려갑니다.
+
+```json
+{ "gps": { "lat": 37.50002, "lng": 127.03655, "fix": "3d", "ts": "2026-10-05T13:30:00+09:00" } }
+```
+
+**완료 확인**: 대시보드에서 설치 위치를 저장하면 30초 안에 배지가 "젯슨 적용됨 · vN" 으로 바뀝니다.
+
 ## 참고
 
 - 하트비트의 `system.gpu_pct` 가 계속 0 으로 옵니다. 추론이 GPU 에서 돌고 있다면 수집 방법을 확인해 주세요. Jetson 은 `tegrastats` 의 `GR3D_FREQ` 값이 GPU 사용률입니다.
@@ -208,3 +259,4 @@ Content-Type: image/jpeg
 | 스냅샷 삭제 | 업로드 응답의 size·sha256 확인 후 로컬 삭제 |
 | 디스크 | 하트비트 `disk_free_mb` 2,000 이상, "디스크 부족" 경고 해제 |
 | 썸네일 | 장치 목록 카드에 화면 표시 |
+| 설치 위치 | 대시보드에서 저장하면 30초 안에 "젯슨 적용됨", 방송 문구에 새 지점명 사용 |

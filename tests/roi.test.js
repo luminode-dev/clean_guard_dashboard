@@ -83,3 +83,21 @@ test('selfIntersects flags crossing edges and labelPoint stays inside the polygo
  assert.equal(pointInPolygon(labelPoint(concave),concave),true,'label inside a U-shape');
  assert.equal(pointInPolygon(labelPoint(square),square),true);
 });
+
+test('site panel coordinate parsing and demo site update',async()=>{
+ const {parseLatLng,parseCoord,validLocation}=await import('../assets/site-panel.js');
+ assert.deepEqual(parseLatLng('37.5000191, 127.0365483'),{lat:37.5000191,lng:127.0365483});
+ assert.deepEqual(parseLatLng('37.5 127.03'),{lat:37.5,lng:127.03});
+ assert.equal(parseLatLng('127.0, 200'),null);
+ assert.equal(parseCoord(''),null);assert.equal(parseCoord('37.1'),37.1);
+ assert.equal(validLocation(0,0),false);assert.equal(validLocation(37.5,127),true);assert.equal(validLocation(91,127),false);
+ const api=createDemoApi({storage:memory()}).request;
+ const [site]=await api('/api/sites');
+ const put=b=>api('/api/sites/'+site.site_id,{method:'PUT',body:JSON.stringify(b)});
+ const saved=await put({base_version:0,name:'역삼1동 수거함 앞',address:'서울 강남구 테헤란로 152',location:{lat:37.5000191,lng:127.0365483},location_source:'address'});
+ assert.equal(saved.version,1);assert.equal(saved.location.lat,37.5000191);
+ assert.equal(Object.values(saved.devices)[0].apply_state,'applied');
+ await assert.rejects(()=>put({base_version:0,name:'x'}),/먼저 수정/);
+ await assert.rejects(()=>put({base_version:1,name:'x',location:{lat:100,lng:1}}),/위도/);
+ assert.equal((await api('/api/sites')).find(s=>s.site_id===site.site_id).name,'역삼1동 수거함 앞');
+});

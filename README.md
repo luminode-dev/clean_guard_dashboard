@@ -73,7 +73,7 @@ npm start -- --api https://cleanguard.duckdns.org
 ## 포함 화면과 시연 동작
 
 - 통합 관제: 지도, 장치 상태, 탐지 현황, 최근 사건
-- 장치 · 영상: 검색, 상세 상태, 점검 모드, 지점/장치 등록, 라이브 영상 위 ROI(감시·제외 구역) 그리기 → 젯슨 전송
+- 장치 · 영상: 검색, 상세 상태, 점검 모드, 지점/장치 등록, 라이브 영상 위 ROI(감시·제외 구역) 그리기 → 젯슨 전송, 설치 위치(주소 검색·GPS 좌표·지도 지정) → 지도 표시 및 젯슨 전송
 - 사건 관리: 검색/필터, 페이지 이동, 처리 상태 변경과 이력, CSV 다운로드, 투기 장면 영상(서버가 SRT 버퍼에서 앞뒤 5초 자동 추출, 최대 500개 보관)
 - 통계 분석: 기간/분류별 집계, 회수율, 방송 여부별 비교
 - 알림 센터: 알림 확인, 미확인/확인 완료 필터
@@ -95,6 +95,7 @@ assets/realtime.js     /ws/events 실시간 수신 (자동 재접속)
 assets/demo-api.js     로컬 시연 데이터 어댑터
 assets/live.js         실시간 영상 플레이어 (MediaMTX WebRTC WHEP / HLS, viewer 인증)
 assets/roi-editor.js   ROI 다각형 편집기 (캔버스 오버레이, 0~1 정규화 좌표, 판정 규칙)
+assets/site-panel.js   설치 위치 패널 (주소 검색, 좌표 입력, 지도 지정, 젯슨 GPS, 적용 상태)
 assets/vendor/         Leaflet, hls.js 및 라이선스
 scripts/serve.mjs      개발용 정적 파일 서버 + API/WS 프록시
 deploy/                Caddy, MediaMTX 설정 예시 · server/ (FastAPI 수집·조회 API 배포본)

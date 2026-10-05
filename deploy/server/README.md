@@ -23,6 +23,10 @@
 
 대시보드에서 그린 감시·제외 구역(0~1 정규화 다각형)을 `device_config` 테이블에 버전과 함께 저장합니다. 하트비트 응답의 `config.roi_version` 으로 젯슨에 알리고, 젯슨은 `GET /api/device/config` 로 받아 `config/roi.json` 에 저장한 뒤 `POST /api/device/config/ack` 로 결과를 보고합니다. 저장 시 `base_version` 이 다르면 409(동시 편집 방지). 적용 상태(`none|pending|applied|failed`)는 `/ws/events` 의 `device_config` 메시지로 대시보드에 실시간 반영됩니다.
 
+## 설치 위치 원격 설정
+
+대시보드 장치 상세의 설치 위치에서 지점명·주소·좌표를 저장하면(`PUT /api/sites/{site_id}`, `base_version` 충돌 시 409) 지점 `version` 이 올라가고, 하트비트 응답 `config.site_version` 으로 젯슨에 알립니다. 젯슨은 `GET /api/device/config` 의 `site` 를 `config/site.json` 에 저장하고 `POST /api/device/config/ack` 에 `site_version` 으로 보고합니다(적용 상태는 `device_site_applied` 테이블). 주소 검색은 `GET /api/geocode?q=`, 좌표→주소는 `GET /api/geocode/reverse` 로 서버가 OpenStreetMap Nominatim 을 대신 호출합니다(초당 1회, 결과 캐시). 하트비트에 `gps` 가 오면 장치에 저장되어 편집 화면에서 "젯슨 GPS 위치 사용" 으로 쓸 수 있습니다.
+
 ## 사건 클립 (서버 자동 추출)
 
 젯슨은 클립을 만들거나 보관하지 않습니다. MediaMTX 가 SRT 로 들어오는 영상을 최근 30분만 순환 녹화하고(`recordDeleteAfter: 30m`), 사건이 들어오면 FastAPI 가 사건 시각 기준 앞 5초 ~ 뒤 5초를 로컬 재생 서버(`127.0.0.1:9996/get?format=mp4`)로 잘라 사건 폴더의 `clip.mp4` 로 저장합니다. 재인코딩이 없어 1~2초면 끝나며, 영상 클립은 용량이 커서 따로 **최대 500개**만 보관합니다. 넘으면 먼저 들어온 사건의 `clip.mp4` 만 지우고(`clip_status: expired`), 사건 기록과 사진은 `max_events`(1000건) 규칙대로 남깁니다.

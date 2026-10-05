@@ -144,6 +144,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS ix_ev_day ON events(day);
             CREATE TABLE IF NOT EXISTS alerts (alert_id TEXT PRIMARY KEY, ts TEXT, device_id TEXT, kind TEXT, data TEXT NOT NULL, acked INTEGER DEFAULT 0, resolved INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS raw_access (at TEXT, user TEXT, event_id TEXT);
+            CREATE TABLE IF NOT EXISTS device_site_applied (
+                device_id TEXT PRIMARY KEY, applied_version INTEGER DEFAULT 0, applied_at TEXT, apply_error TEXT);
             CREATE TABLE IF NOT EXISTS device_config (
                 device_id TEXT PRIMARY KEY, version INTEGER DEFAULT 0, data TEXT NOT NULL, updated_at TEXT,
                 applied_version INTEGER DEFAULT 0, applied_at TEXT, apply_error TEXT);
@@ -262,6 +264,7 @@ def device_view(conn, row) -> dict:
         "thumbnail_at": iso(datetime.fromtimestamp(thumb.stat().st_mtime, tz=timezone.utc)) if thumb.exists() else None,
         "site": site_of(conn, d.get("site_id", "")),
         "roi": roi_summary(conn, row["device_id"]),
+        "site_config": site_summary(conn, row["device_id"], d.get("site_id")),
         "last_seen_s": int(age) if age is not None else None,
         "video": stream_state(d.get("stream")),
     }
@@ -353,6 +356,57 @@ def validate_zones(zones: Any) -> list[dict]:
         seen.add(zid)
         out.append({"id": zid, "name": str(z.get("name") or ("감시 구역" if ztype == "include" else "제외 구역"))[:40], "type": ztype, "points": clean})
     return out
+
+
+# ---------------------------------------------------------------- 설치 지점 원격 설정 (이름·주소·GPS 좌표 → 젯슨 config/site.json)
+def site_document(conn, site_id: str | None) -> dict:
+    s = site_of(conn, site_id or "") or {}
+    return {"site_id": site_id, "name": s.get("name"), "address": s.get("address") or "", "location": s.get("location"),
+            "region": s.get("region") or {}, "version": int(s.get("version") or 0), "updated_at": s.get("updated_at"), "updated_by": s.get("updated_by"),
+            "location_source": s.get("location_source")}
+
+
+def site_summary(conn, device_id: str, site_id: str | None) -> dict:
+    version = site_document(conn, site_id)["version"]
+    r = conn.execute("SELECT * FROM device_site_applied WHERE device_id=?", (device_id,)).fetchone()
+    applied = (r["applied_version"] or 0) if r else 0
+    err = r["apply_error"] if r else None
+    if not version:
+        state = "none"
+    elif applied >= version:
+        state = "applied"
+    elif err:
+        state = "failed"
+    else:
+        state = "pending"
+    return {"version": version, "applied_version": applied, "apply_state": state, "apply_error": err if state == "failed" else None}
+
+
+def mark_site_applied(conn, device_id: str, version: int, ok: bool = True, error: str | None = None) -> bool:
+    d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+    current = site_document(conn, json.loads(d["data"]).get("site_id") if d else None)["version"]
+    if not isinstance(version, int) or version > current:
+        return False
+    r = conn.execute("SELECT * FROM device_site_applied WHERE device_id=?", (device_id,)).fetchone()
+    if ok:
+        if r and (r["applied_version"] or 0) >= version:
+            return False
+        conn.execute("INSERT INTO device_site_applied(device_id, applied_version, applied_at, apply_error) VALUES (?,?,?,NULL) "
+                     "ON CONFLICT(device_id) DO UPDATE SET applied_version=excluded.applied_version, applied_at=excluded.applied_at, apply_error=NULL",
+                     (device_id, version, iso(now_utc())))
+    else:
+        conn.execute("INSERT INTO device_site_applied(device_id, applied_version, apply_error) VALUES (?,0,?) "
+                     "ON CONFLICT(device_id) DO UPDATE SET apply_error=excluded.apply_error", (device_id, str(error or "적용 실패")[:300]))
+    return True
+
+
+def valid_location(loc: Any) -> dict | None:
+    if not isinstance(loc, dict):
+        return None
+    lat, lng = loc.get("lat"), loc.get("lng")
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)) and -90 <= lat <= 90 and -180 <= lng <= 180 and not (lat == 0 and lng == 0):
+        return {"lat": round(float(lat), 7), "lng": round(float(lng), 7)}
+    return None
 
 
 def mark_roi_applied(conn, device_id: str, version: int, ok: bool = True, error: str | None = None) -> bool:
@@ -908,45 +962,68 @@ async def heartbeat(request: Request, device_id: str = Depends(device_auth)):
         # 장치가 보고한 hw/sw/config 는 Device 마스터에 반영
         row = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
         d = json.loads(row["data"])
-        for k in ("hw", "sw", "config", "name"):
+        for k in ("hw", "sw", "config", "name", "gps"):  # gps: {lat, lng, fix, ts} (젯슨에 GPS 모듈이 있으면)
             if body.get(k):
                 d[k] = body[k]
         conn.execute("UPDATE devices SET data=? WHERE device_id=?", (json.dumps(d, ensure_ascii=False), device_id))
         # 장치가 실제 적용 중인 ROI 버전을 보고하면 반영 (ack 유실 대비, §2 "실제 적용 값 보고")
-        reported = (body.get("config") or {}).get("roi_version") if isinstance(body.get("config"), dict) else None
+        cfg_body = body.get("config") if isinstance(body.get("config"), dict) else {}
+        reported = cfg_body.get("roi_version")
         roi_changed = isinstance(reported, int) and mark_roi_applied(conn, device_id, reported)
+        site_reported = cfg_body.get("site_version")
+        site_changed = isinstance(site_reported, int) and mark_site_applied(conn, device_id, site_reported)
         evaluate_device_alerts(conn, device_id)
         view = device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone())
     hub.publish("heartbeat", {"device_id": device_id, "status": view["status"], "ts": ts, "pipeline": body.get("pipeline"), "issues": body.get("issues", [])})
     if roi_changed:
-        hub.publish("device_config", {"device_id": device_id, **view["roi"]})
-    return {"device_id": device_id, "status": view["status"], "received_at": received, "config": {"roi_version": view["roi"]["version"]}}
+        hub.publish("device_config", {"device_id": device_id, "kind": "roi", **view["roi"]})
+    if site_changed:
+        hub.publish("device_config", {"device_id": device_id, "kind": "site", **view["site_config"]})
+    return {"device_id": device_id, "status": view["status"], "received_at": received,
+            "config": {"roi_version": view["roi"]["version"], "site_version": view["site_config"]["version"]}}
 
 
 @app.get("/api/device/config")
 def device_config_for_device(device_id: str = Depends(device_auth)):
-    """젯슨용: 하트비트 응답의 config.roi_version 이 로컬보다 크면 이걸로 받아 config/roi.json 에 저장한다."""
+    """젯슨용: 하트비트 응답의 config.roi_version / site_version 이 로컬보다 크면 받아
+    config/roi.json, config/site.json 에 각각 저장한다."""
     with db() as conn:
-        return {"device_id": device_id, "roi": roi_document(conn, device_id)}
+        d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        site_id = json.loads(d["data"]).get("site_id") if d else None
+        return {"device_id": device_id, "roi": roi_document(conn, device_id), "site": site_document(conn, site_id)}
 
 
 @app.post("/api/device/config/ack")
 async def device_config_ack(request: Request, device_id: str = Depends(device_auth)):
+    """적용 결과 보고: {"roi_version": N, "ok": true} 또는 {"site_version": N, "ok": true} (둘 다 보내도 됨)."""
     body = await read_json(request)
-    version = body.get("roi_version")
-    if not isinstance(version, int):
-        raise HTTPException(422, "roi_version(정수)이 필요합니다.")
+    version, site_version = body.get("roi_version"), body.get("site_version")
+    if not isinstance(version, int) and not isinstance(site_version, int):
+        raise HTTPException(422, "roi_version 또는 site_version(정수)이 필요합니다.")
     ok = body.get("ok", True) is not False
+    out: dict[str, Any] = {}
     with _db_lock, db() as conn:
-        r = roi_row(conn, device_id)
-        if not r:
-            raise HTTPException(404, "이 장치에 ROI 설정이 없습니다.")
-        if version > r["version"]:
-            raise HTTPException(409, f"서버 버전({r['version']})보다 큰 버전입니다.")
-        mark_roi_applied(conn, device_id, version, ok, body.get("error"))
-        summary = roi_summary(conn, device_id)
-    hub.publish("device_config", {"device_id": device_id, **summary})
-    return summary
+        if isinstance(version, int):
+            r = roi_row(conn, device_id)
+            if not r:
+                raise HTTPException(404, "이 장치에 ROI 설정이 없습니다.")
+            if version > r["version"]:
+                raise HTTPException(409, f"서버 ROI 버전({r['version']})보다 큰 버전입니다.")
+            mark_roi_applied(conn, device_id, version, ok, body.get("error"))
+            out = {**roi_summary(conn, device_id)}
+        if isinstance(site_version, int):
+            d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+            site_id = json.loads(d["data"]).get("site_id") if d else None
+            current = site_document(conn, site_id)["version"]
+            if site_version > current:
+                raise HTTPException(409, f"서버 지점 설정 버전({current})보다 큰 버전입니다.")
+            mark_site_applied(conn, device_id, site_version, ok, body.get("error"))
+            out["site_config"] = site_summary(conn, device_id, site_id)
+    if isinstance(version, int):
+        hub.publish("device_config", {"device_id": device_id, "kind": "roi", **{k: v for k, v in out.items() if k != "site_config"}})
+    if isinstance(site_version, int):
+        hub.publish("device_config", {"device_id": device_id, "kind": "site", **out["site_config"]})
+    return out
 
 
 @app.put("/api/devices/{device_id}/thumbnail")
@@ -995,6 +1072,86 @@ async def add_site(request: Request, user: str = Depends(dashboard_user)):
             raise HTTPException(409, "이미 등록된 지점입니다.")
         conn.execute("INSERT INTO sites(site_id, data) VALUES (?, ?)", (s["site_id"], json.dumps(s, ensure_ascii=False)))
     return s
+
+
+@app.put("/api/sites/{site_id}")
+async def update_site(site_id: str, request: Request, user: str = Depends(dashboard_user)):
+    """설치 지점 이름·주소·좌표 수정 → 버전 증가 → 다음 하트비트 응답으로 젯슨에 전달 (config/site.json)."""
+    b = await read_json(request)
+    loc = valid_location(b.get("location"))
+    if b.get("location") is not None and loc is None:
+        raise HTTPException(422, "위도는 -90~90, 경도는 -180~180 사이 숫자여야 합니다.")
+    name = str(b.get("name") or "").strip()
+    if not name:
+        raise HTTPException(422, "지점명을 입력하세요.")
+    with _db_lock, db() as conn:
+        s = site_of(conn, site_id)
+        if not s:
+            raise HTTPException(404, "지점이 없습니다.")
+        current = int(s.get("version") or 0)
+        if b.get("base_version", current) != current:
+            raise HTTPException(409, "다른 사용자가 지점 정보를 먼저 수정했습니다. 다시 불러오세요.")
+        s.update({"name": name[:60], "address": str(b.get("address") or "").strip()[:200], "location": loc,
+                  "location_source": b.get("location_source") if b.get("location_source") in ("address", "gps", "manual", "map", "device") else "manual",
+                  "version": current + 1, "updated_at": iso(now_utc()), "updated_by": user})
+        if isinstance(b.get("region"), dict):
+            s["region"] = {k: str(v)[:40] for k, v in b["region"].items() if k in ("sido", "sigungu", "dong", "code")}
+        conn.execute("UPDATE sites SET data=? WHERE site_id=?", (json.dumps(s, ensure_ascii=False), site_id))
+        devs = [r["device_id"] for r in conn.execute("SELECT device_id FROM devices WHERE json_extract(data,'$.site_id')=?", (site_id,))]
+        summaries = {d: site_summary(conn, d, site_id) for d in devs}
+    for d, summ in summaries.items():
+        hub.publish("device_config", {"device_id": d, "kind": "site", **summ})
+    return {**s, "devices": summaries}
+
+
+# ---------------------------------------------------------------- 주소 ↔ 좌표 (OpenStreetMap Nominatim, 서버에서 대신 호출·캐시)
+# 사용 정책: 초당 1회 이하, 식별 가능한 User-Agent. 관제 화면에서 지점을 저장할 때만 쓰므로 호출량이 매우 적다.
+_geo_cache: dict[str, Any] = {}
+_geo_lock = threading.Lock()
+_geo_last = [0.0]
+
+
+def nominatim(path: str, params: dict) -> Any:
+    key = path + "?" + urllib.parse.urlencode(sorted(params.items()))
+    if key in _geo_cache:
+        return _geo_cache[key]
+    with _geo_lock:
+        wait = 1.1 - (now_utc().timestamp() - _geo_last[0])
+        if wait > 0:
+            import time
+            time.sleep(wait)
+        req = urllib.request.Request(f"https://nominatim.openstreetmap.org/{path}?{urllib.parse.urlencode(params)}",
+                                     headers={"User-Agent": SETTINGS.get("geocode_user_agent", "CleanGuard/1.0 (luminode dashboard)"), "Accept-Language": "ko"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as err:  # noqa: BLE001
+            raise HTTPException(502, f"주소 검색 서비스에 연결하지 못했습니다: {err}")
+        finally:
+            _geo_last[0] = now_utc().timestamp()
+    if len(_geo_cache) > 500:
+        _geo_cache.clear()
+    _geo_cache[key] = data
+    return data
+
+
+def region_from(addr: dict) -> dict:
+    return {"sido": addr.get("province") or addr.get("city") or addr.get("state") or "", "sigungu": addr.get("borough") or addr.get("county") or addr.get("city_district") or "",
+            "dong": addr.get("quarter") or addr.get("suburb") or addr.get("neighbourhood") or addr.get("village") or ""}
+
+
+@app.get("/api/geocode")
+def geocode(q: str = Query(..., min_length=2, max_length=200), user: str = Depends(dashboard_user)):
+    rows = nominatim("search", {"format": "jsonv2", "q": q, "countrycodes": SETTINGS.get("geocode_countries", "kr"), "limit": 5, "addressdetails": 1})
+    return [{"lat": float(r["lat"]), "lng": float(r["lon"]), "label": r.get("display_name", ""), "region": region_from(r.get("address") or {})} for r in rows]
+
+
+@app.get("/api/geocode/reverse")
+def reverse_geocode(lat: float = Query(..., ge=-90, le=90), lng: float = Query(..., ge=-180, le=180), user: str = Depends(dashboard_user)):
+    r = nominatim("reverse", {"format": "jsonv2", "lat": f"{lat:.6f}", "lon": f"{lng:.6f}", "addressdetails": 1, "zoom": 18})
+    if not isinstance(r, dict) or r.get("error"):
+        return {"label": "", "region": {}}
+    return {"label": r.get("display_name", ""), "region": region_from(r.get("address") or {})}
 
 
 @app.get("/api/devices")
