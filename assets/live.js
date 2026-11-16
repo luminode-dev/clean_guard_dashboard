@@ -29,7 +29,7 @@ export class LivePlayer {
      this.hls=new Hls({enableWorker:false,xhrSetup:xhr=>{for(const [k,v] of Object.entries(headers))xhr.setRequestHeader(k,v);}});
      this.hls.loadSource(live.url);this.hls.attachMedia(this.video);
      this.hls.on(Hls.Events.MANIFEST_PARSED,()=>{this.setState('playing','라이브 · 모자이크 영상');this.video.play().catch(()=>{});this.watchStall();});
-     this.hls.on(Hls.Events.ERROR,(_,data)=>{if(!data.fatal)return;const code=data.response?.code;this.message.textContent=code===401||code===403?'영상 viewer 계정 인증에 실패했습니다. config.js 의 live.user / live.pass 를 확인하세요.':'영상 연결에 실패했습니다. 스트림 주소와 미디어 서버를 확인하세요.';});
+     this.hls.on(Hls.Events.ERROR,(_,data)=>{if(!data.fatal)return;const code=data.response?.code;this.message.textContent=code===401||code===403?'영상 viewer 계정 인증에 실패했습니다. 서버의 mediamtx.yml viewer 계정을 확인하세요.':'영상 연결에 실패했습니다. 스트림 주소와 미디어 서버를 확인하세요.';});
     }else if(this.video.canPlayType('application/vnd.apple.mpegurl')){this.video.src=live.url;await this.video.play();this.message.textContent='라이브 · 모자이크 영상';}
     else throw new Error('이 브라우저는 HLS를 지원하지 않습니다.');
     return;
@@ -44,7 +44,7 @@ export class LivePlayer {
    if(response.status===401||response.status===403){
     this.pc.close();this.pc=null;
     if(retry&&!live.headers?.Authorization){try{sessionStorage.removeItem(VIEWER_KEY);}catch{}const auth=askViewer();if(auth&&!this.closed)return this.start({...live,headers:{...(live.headers||{}),Authorization:auth}},false);}
-    throw new Error('영상 viewer 계정 인증에 실패했습니다. config.js 의 live.user / live.pass 를 확인하세요.');
+    throw new Error('영상 viewer 계정 인증에 실패했습니다. 서버의 mediamtx.yml viewer 계정을 확인하세요.');
    }
    if(response.status===404){this.pc.close();this.pc=null;this.setState('ended','젯슨이 지금 영상을 보내지 않습니다 (송출 없음). 젯슨 전원·네트워크와 SRT 송출을 확인하세요.');return;}
    if(!response.ok)throw new Error('미디어 서버 연결 실패 ('+response.status+') · '+live.url);

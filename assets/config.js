@@ -20,7 +20,7 @@ window.CLEAN_GUARD_CONFIG={
  mediaBase:'/snapshots',
 
  // 실시간 영상 (MediaMTX, Caddy 경유). WebRTC WHEP: {base}/{stream}/whep · HLS: {base}/{stream}/index.m3u8
- // viewer 계정을 비워 두면 영상 연결 시 브라우저에서 한 번 물어보고 이 탭에만 기억합니다.
+ // viewer 계정은 서버(/api/devices/{id}/stream)가 mediamtx.yml 에서 읽어 로그인한 대시보드에 전달합니다. 서버가 주지 않을 때만 아래 값이나 입력 창을 씁니다.
  live:{base:'https://live.cleanguard.duckdns.org',protocol:'webrtc',user:'',pass:''},
 
 // 서버에 /api/sites, /api/devices 가 없을 때 사용할 지점·장치 목록. ID 체계는 jetson_data.md (SITE-GN-0007 / JT-GN-0007) 를 따르고,

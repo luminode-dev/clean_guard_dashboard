@@ -242,6 +242,24 @@ def mediamtx_add_publisher(user: str, stream: str, password: str, replace: bool 
     os.replace(tmp, MEDIAMTX_CONFIG)
 
 
+_VIEWER_CACHE: dict[str, Any] = {"mtime": None, "auth": None}
+_VIEWER_RE = re.compile(r"^  - user: (\S+)\n    pass: (\S+)\n    permissions:\n      - action: read\b", re.M)
+
+
+def live_viewer_auth() -> str | None:
+    """대시보드 실시간 영상용 viewer(시청 전용) 계정의 Basic 인증 값. mediamtx.yml 이 원본이며 파일이 바뀌면 다시 읽는다.
+    /api 는 대시보드 로그인 뒤에만 열리므로, 로그인한 사용자에게만 전달된다."""
+    try:
+        mtime = MEDIAMTX_CONFIG.stat().st_mtime
+    except OSError:
+        return None
+    if _VIEWER_CACHE["mtime"] != mtime:
+        m = _VIEWER_RE.search(MEDIAMTX_CONFIG.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        auth = "Basic " + base64.b64encode(f"{m.group(1)}:{m.group(2)}".encode()).decode() if m else None
+        _VIEWER_CACHE.update(mtime=mtime, auth=auth)
+    return _VIEWER_CACHE["auth"]
+
+
 def mediamtx_remove_publisher(user: str) -> bool:
     """장치 계정 구역에서 해당 송출 계정(자동 등록 주석 포함)을 지운다. 지웠으면 True."""
     text = MEDIAMTX_CONFIG.read_text(encoding="utf-8")
@@ -1855,6 +1873,9 @@ def device_stream(device_id: str, user: str = Depends(dashboard_user)):
         out["connected"] = video is None or bool(video.get("publishing"))
         out["live"] = {"protocol": proto, "url": f"{SETTINGS['live_base'].rstrip('/')}/{stream}/" + ("index.m3u8" if proto == "hls" else "whep"), "stream": stream,
                        "variants": [{"id": "annotated", "desc": "추적 박스·이벤트 표시 + 모자이크", "default": True}]}
+        auth = live_viewer_auth()
+        if auth:
+            out["live"]["headers"] = {"Authorization": auth}
     return out
 
 
