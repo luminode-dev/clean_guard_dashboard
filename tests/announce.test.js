@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {renderPhrase,templateError,voiceLabel} from '../assets/announce.js';
+import {renderPhrase,templateError,voiceLabel,templateToParts,partsToTemplate,textToParts} from '../assets/announce.js';
 import {createDemoApi} from '../assets/demo-api.js';
 
 const T='[{장소}에 ][{색상} ]{종류}를 무단으로 버리셨습니다. 되가져가 주시기 바랍니다. 이곳은 CCTV 녹화 중입니다.';
@@ -39,4 +39,34 @@ test('demo mode keeps a per-device announcement config with versioning',async()=
  assert.equal((await api('/api/devices/'+d2.device_id+'/announce')).voice,'M4','other device keeps its own setting');
  await assert.rejects(()=>api('/api/devices/'+d1.device_id+'/announce',{method:'PUT',body:JSON.stringify({...first,base_version:0})}),/먼저 수정/);
  assert.equal((await createDemoApi({storage}).request('/api/devices/'+d1.device_id+'/announce')).voice,'F2','persists');
+});
+
+test('chip editor: default template opens as chips and saves back unchanged',()=>{
+ const parts=templateToParts(T);
+ assert.deepEqual(parts.slice(0,5),[{type:'token',name:'장소'},{type:'text',text:'에 '},{type:'token',name:'색상'},{type:'text',text:' '},{type:'token',name:'종류'}]);
+ assert.equal(partsToTemplate(parts),T);
+});
+
+test('chip editor: place/color chips drop together with the word attached to them',()=>{
+ // 사용자가 칩 + 평범한 글만 입력한 경우 (대괄호 없이)
+ const typed=[{type:'text',text:'여기는 '},{type:'token',name:'장소'},{type:'text',text:'입니다. '},{type:'token',name:'색상'},{type:'text',text:' '},{type:'token',name:'종류'},{type:'text',text:'를 버리지 마세요.'}];
+ const t=partsToTemplate(typed);
+ assert.equal(t,'여기는 [{장소}입니다. ][{색상} ]{종류}를 버리지 마세요.');
+ assert.equal(templateError(t),null);
+ assert.equal(renderPhrase(t,{장소:'정문',색상:'빨간색',종류:'캔'}),'여기는 정문입니다. 빨간색 캔을 버리지 마세요.');
+ assert.equal(renderPhrase(t,{장소:'',색상:'',종류:'종이 상자'}),'여기는 종이 상자를 버리지 마세요.');
+ assert.deepEqual(templateToParts(t),typed,'round trip');
+});
+
+test('chip editor: typed codes become chips, stray brackets are removed',()=>{
+ assert.deepEqual(textToParts('{장소}에 [빨간] {종류}'),[{type:'token',name:'장소'},{type:'text',text:'에 빨간 '},{type:'token',name:'종류'}]);
+ assert.equal(partsToTemplate([{type:'token',name:'장소'},{type:'token',name:'종류'},{type:'text',text:'를'}]),'[{장소}]{종류}를');
+ assert.equal(partsToTemplate([{type:'text',text:'끝에 '},{type:'token',name:'색상'}]),'끝에 [{색상}]');
+});
+
+test('chip editor: templates chips cannot show fall back to code view',()=>{
+ assert.equal(templateToParts('[앞 {장소}에 ]{종류}를 버리지 마세요'),null);
+ assert.equal(templateToParts('[{장소} {색상} ]{종류}를'),null);
+ assert.equal(templateToParts('{장소}에 버리지 마세요'),null,'bare place would change meaning when empty');
+ assert.ok(templateToParts('{종류}를 버리지 마세요'));
 });

@@ -10,3 +10,30 @@
 .audio-box{margin-top:8px}.audio-box audio{width:100%;height:36px}.audio-box a{color:#2b907a}.audio-play{margin-left:6px}
 .prov-warn{background:#fff6df;border:1px solid #f0dfb8;color:#8a6a2a;border-radius:6px;padding:10px 12px;font-size:12px;margin-bottom:14px}.prov-row{display:grid;grid-template-columns:110px 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:11px}.prov-row span{color:#7f9289}.prov-row code{font-size:11px;color:#203335;overflow-wrap:anywhere;background:#f6f8f7;padding:4px 6px;border-radius:4px}.prov-h{font-size:12px;margin:16px 0 6px}.prov-env{background:#12272c;color:#d6fff4;font-size:11px;padding:10px 12px;border-radius:6px;overflow-x:auto;white-space:pre;margin-bottom:12px}.device-admin{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.button.danger{color:#b75a50;border-color:#efc1bc}.button.danger:hover{background:#fdf3f0}
 .ann-sentence{font-size:12px;color:#2f4b45;background:#f3f8f6;border-left:3px solid #16a181;padding:7px 10px;border-radius:4px;margin:6px 0}.ann-tokens{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:#7f9289}.ann-tokens .button{min-height:26px;padding:3px 8px}.ann-sample{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:#5f746c}.ann-sample select{border:1px solid #dce6df;border-radius:5px;padding:4px 6px;font-size:11px}.ann-inline{display:flex!important;align-items:center;gap:5px;font-size:11px;color:#5f746c}.ann-inline input{width:auto!important}.ann-vocab{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin:8px 0}.ann-vocab label{font-size:10px;color:#7f9289;display:grid;gap:2px}.ann-vocab input{border:1px solid #dce6df;border-radius:5px;padding:5px 7px;font-size:11px}#ann-template{width:100%;border:1px solid #dce6df;border-radius:5px;padding:7px 9px;font:inherit;font-size:12px;color:#2f4b45;resize:vertical}.site-form select{width:100%;border:1px solid #dce6df;border-radius:5px;padding:6px 8px;font-size:12px;background:#fff}
+.ann-field{display:grid;gap:6px}
+.ann-field-head{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#7f9289}
+.ann-editor{min-height:58px;border:1px solid #dce6df;border-radius:6px;padding:8px 10px;font-size:13px;line-height:2;color:#203335;background:#fff;white-space:pre-wrap;word-break:keep-all;outline:none;cursor:text}
+.ann-editor:focus{border-color:#16a181;box-shadow:0 0 0 3px rgba(22,161,129,.15)}
+.ann-chip{display:inline-block;padding:0 8px;margin:0 1px;border-radius:999px;font-size:12px;font-weight:600;line-height:20px;vertical-align:baseline;user-select:none;border:1px solid}
+.ann-chip-place{background:#e7f1fb;color:#2c6aa8;border-color:#bcd6ef}
+.ann-chip-color{background:#fdf0e3;color:#b0621c;border-color:#f1cfa9}
+.ann-chip-class{background:#e8f6f1;color:#0b7a64;border-color:#b7e2d4}
+.ann-chip-btn{border:1px solid;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;min-height:26px;font-family:inherit}
+.ann-chip-btn:hover{filter:brightness(.96)}
+.ann-help{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:11px;color:#5f746c}
+.ann-help .ann-chip{font-size:10px;line-height:17px;margin-right:4px}
+.ann-vocab-table{width:100%;border-collapse:collapse;margin:8px 0;font-size:11px}
+.ann-vocab-table th{text-align:left;font-weight:600;color:#7f9289;font-size:10px;padding:4px 6px;border-bottom:1px solid #e7ecec}
+.ann-vocab-table td{padding:3px 6px;border-bottom:1px solid #f0f3f3;color:#496350}
+.ann-vocab-table td:first-child{width:38%;white-space:nowrap}
+.ann-vocab-table input{width:100%;border:1px solid #dce6df;border-radius:5px;padding:5px 7px;font-size:11px}
+.ann-colors-head{font-size:11px;color:#496350;margin:6px 0 4px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+.ann-colors{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.ann-color{display:inline-flex;align-items:center;gap:2px;background:#f3f6f6;border:1px solid #dce6df;border-radius:999px;padding:1px 3px 1px 9px;font-size:11px;color:#496350}
+.ann-color button{border:0;background:none;color:#9aa8a6;font-size:14px;line-height:1;cursor:pointer;padding:2px 5px;border-radius:999px}
+.ann-color button:hover{background:#f6dcda;color:#c16a61}
+.ann-color-add{display:inline-flex;gap:4px;align-items:center}
+.ann-color-add input{width:130px!important;border:1px solid #dce6df;border-radius:5px;padding:4px 7px;font-size:11px}
+.ann-color-add .button{min-height:26px;padding:3px 9px}
+.ann-words summary{cursor:pointer;font-size:11px;color:#496350}
+.site-form .ann-sample select{width:auto;min-width:90px}
