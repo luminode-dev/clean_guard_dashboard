@@ -1,7 +1,7 @@
 // 실제 서버(Caddy → FastAPI) 연결 어댑터.
 // app.js 는 demo-api.js 와 같은 request(url, options) 계약만 사용하므로, 여기서 서버 응답을 화면 모델로 맞춥니다.
 // 서버가 아직 제공하지 않는 조회 엔드포인트(404)는 /api/events 목록으로 파생 계산합니다.
-import {summary,day,hour} from './demo-api.js?v=202610050624';
+import {summary,day,hour} from './demo-api.js?v=202611161151';
 
 const DEFAULTS={mode:'auto',apiBase:'',wsPath:'/ws/events',mediaBase:'/snapshots',live:{protocol:'webrtc'},sites:[],devices:[],auth:null};
 const STATES=['new','reviewing','confirmed','actioned','dismissed'];
@@ -194,7 +194,7 @@ export function createServerApi({config={},fetcher,now=()=>new Date(),storage}={
    if(path==='/api/events.csv'){
     const csv=await optional('events.csv','/api/events.csv'+qs);if(typeof csv==='string')return csv;
     const all=await allEvents(),sites=await resolveSites(all),cell=v=>'"'+String(v??'').replace(/^[=+@-]/,"'$&").replaceAll('"','""')+'"';
-    return '﻿'+[['사건 ID','발생 시각','지점','장치','종류','신뢰도','상태','회수'],...filterEvents(all,p,sites).map(e=>[e.event_id,e.ts,sites.find(s=>s.site_id===e.site_id)?.name||e.site_id,e.device_id,e.detection.class,e.detection.conf,e.review.state,e.outcome.retrieved])].map(r=>r.map(cell).join(',')).join('\r\n')+'\r\n';
+    return '﻿'+[['사건 ID','발생 시각','지점','장치','종류','상태','회수'],...filterEvents(all,p,sites).map(e=>[e.event_id,e.ts,sites.find(s=>s.site_id===e.site_id)?.name||e.site_id,e.device_id,e.detection.class,e.review.state,e.outcome.retrieved])].map(r=>r.map(cell).join(',')).join('\r\n')+'\r\n';
    }
    const event=path.match(/^\/api\/events\/([^/]+)$/);
    if(event){

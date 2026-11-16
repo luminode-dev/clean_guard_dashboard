@@ -144,6 +144,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS ix_ev_day ON events(day);
             CREATE TABLE IF NOT EXISTS alerts (alert_id TEXT PRIMARY KEY, ts TEXT, device_id TEXT, kind TEXT, data TEXT NOT NULL, acked INTEGER DEFAULT 0, resolved INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS raw_access (at TEXT, user TEXT, event_id TEXT);
+            CREATE TABLE IF NOT EXISTS deleted_events (event_id TEXT PRIMARY KEY, at TEXT, user TEXT);
             CREATE TABLE IF NOT EXISTS device_site_applied (
                 device_id TEXT PRIMARY KEY, applied_version INTEGER DEFAULT 0, applied_at TEXT, apply_error TEXT);
             CREATE TABLE IF NOT EXISTS device_config (
@@ -693,20 +694,42 @@ def enforce_retention(conn) -> int:
         return 0
     victims = conn.execute("SELECT event_id, data FROM events ORDER BY received_at ASC, ts ASC LIMIT ?", (excess,)).fetchall()
     for r in victims:
-        e = json.loads(r["data"])
-        folder = media_folder(e)
-        if folder.exists():
-            shutil.rmtree(folder, ignore_errors=True)
-            day_dir = folder.parent
-            try:
-                if day_dir.exists() and not any(day_dir.iterdir()):
-                    day_dir.rmdir()
-            except OSError:
-                pass
-        conn.execute("DELETE FROM alerts WHERE json_extract(data,'$.event_id') = ?", (r["event_id"],))
-        conn.execute("DELETE FROM events WHERE event_id=?", (r["event_id"],))
+        remove_event(conn, r["event_id"], json.loads(r["data"]))
     print(f"retention: removed {len(victims)} oldest events (limit {limit})")
     return len(victims)
+
+
+def remove_event(conn, event_id: str, e: dict) -> None:
+    """사건 1건 삭제: DB 행 + 미디어 폴더(사진·영상·음성) + 관련 알림."""
+    folder = media_folder(e)
+    if folder.exists():
+        shutil.rmtree(folder, ignore_errors=True)
+        day_dir = folder.parent
+        try:
+            if day_dir.exists() and not any(day_dir.iterdir()):
+                day_dir.rmdir()
+        except OSError:
+            pass
+    conn.execute("DELETE FROM alerts WHERE json_extract(data,'$.event_id') = ?", (event_id,))
+    conn.execute("DELETE FROM events WHERE event_id=?", (event_id,))
+
+
+def delete_events(conn, ids: list[str], user: str) -> list[str]:
+    """운영자 삭제. 지운 ID 는 deleted_events 에 남겨, 젯슨이 같은 사건을 다시 보내도 되살리지 않는다 (30일 보관)."""
+    done = []
+    for event_id in dict.fromkeys(ids):
+        row = conn.execute("SELECT data FROM events WHERE event_id=?", (event_id,)).fetchone()
+        if not row:
+            continue
+        remove_event(conn, event_id, json.loads(row["data"]))
+        conn.execute("INSERT OR REPLACE INTO deleted_events(event_id, at, user) VALUES (?,?,?)", (event_id, iso(now_utc()), user))
+        done.append(event_id)
+    conn.execute("DELETE FROM deleted_events WHERE at < ?", (iso(now_utc() - timedelta(days=30)),))
+    return done
+
+
+def was_deleted(conn, event_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM deleted_events WHERE event_id=?", (event_id,)).fetchone() is not None
 
 
 def filter_sql(p: dict) -> tuple[str, list]:
@@ -969,9 +992,11 @@ async def ingest_event(request: Request, device_id: str = Depends(device_auth)):
         existing = conn.execute("SELECT data FROM events WHERE event_id=?", (e["event_id"],)).fetchone()
         if existing:
             return JSONResponse({"event_id": e["event_id"], "duplicate": True}, status_code=200)
-        if not e["site_id"]:
-            d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
-            e["site_id"] = json.loads(d["data"]).get("site_id", "") if d else ""
+        if was_deleted(conn, e["event_id"]):
+            return JSONResponse({"event_id": e["event_id"], "duplicate": True, "deleted": True}, status_code=200)
+        # 서버에 등록된 장치의 지점이 우선 (지점을 옮긴 뒤 젯슨 env 의 CG_SITE_ID 가 예전 값이어도 새 지점으로 기록)
+        d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        e["site_id"] = (json.loads(d["data"]).get("site_id") if d else "") or e["site_id"]
         if not conn.execute("SELECT 1 FROM devices WHERE device_id=?", (device_id,)).fetchone():
             conn.execute("INSERT INTO devices(device_id, data) VALUES (?, ?)", (device_id, json.dumps({"device_id": device_id, "site_id": e["site_id"], "name": device_id}, ensure_ascii=False)))
         save_event(conn, e)
@@ -990,6 +1015,8 @@ async def event_update(event_id: str, request: Request, device_id: str = Depends
     body = await read_json(request)
     with _db_lock, db() as conn:
         row = conn.execute("SELECT * FROM events WHERE event_id=?", (event_id,)).fetchone()
+        if not row and was_deleted(conn, event_id):
+            return {"event_id": event_id, "deleted": True}
         if not row:
             raise HTTPException(404, "사건을 찾을 수 없습니다.")
         e = json.loads(row["data"])
@@ -1010,6 +1037,14 @@ async def event_update(event_id: str, request: Request, device_id: str = Depends
 async def event_media(event_id: str, device_id: str = Depends(device_auth), snapshot: UploadFile | None = File(None), snapshot_raw: UploadFile | None = File(None), clip: UploadFile | None = File(None), announce_audio: UploadFile | None = File(None)):
     with _db_lock, db() as conn:
         row = conn.execute("SELECT * FROM events WHERE event_id=?", (event_id,)).fetchone()
+        if not row and was_deleted(conn, event_id):
+            # 운영자가 지운 사건: 파일은 버리고, 젯슨이 로컬 파일을 정리하도록 size·sha256 만 돌려준다
+            files = {}
+            for name, up in (("snapshot", snapshot), ("snapshot_raw", snapshot_raw), ("clip", clip), ("announce_audio", announce_audio)):
+                if up is not None:
+                    data = await up.read()
+                    files[name] = {"url": None, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            return {"deleted": True, "files": files}
         if not row:
             raise HTTPException(404, "사건을 먼저 등록(POST /api/events)하세요.")
         e = json.loads(row["data"])
@@ -1338,6 +1373,38 @@ def delete_device(device_id: str, user: str = Depends(dashboard_user)):
     return {"device_id": device_id, "deleted": True, "publisher_removed": removed_publisher, "by": user}
 
 
+@app.put("/api/devices/{device_id}/site")
+async def move_device_site(device_id: str, request: Request, user: str = Depends(dashboard_user)):
+    """장치의 설치 지점을 바꾼다. 지점 정보(이름·주소·좌표)는 지점 단위라 같은 지점의 장치끼리 공유되므로,
+    장치마다 위치를 따로 두려면 장치별로 다른 지점을 지정한다.
+    젯슨은 site_version 이 로컬보다 클 때만 받아 가므로, 옮겨 갈 지점 버전을 이 장치가 이미 가진 버전보다 크게 올린다."""
+    b = await read_json(request)
+    site_id = str(b.get("site_id") or "").strip()
+    with _db_lock, db() as conn:
+        row = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "장치가 없습니다.")
+        target = site_of(conn, site_id)
+        if not target:
+            raise HTTPException(422, "설치 지점이 없습니다.")
+        d = json.loads(row["data"])
+        if d.get("site_id") != site_id:
+            r = conn.execute("SELECT applied_version FROM device_site_applied WHERE device_id=?", (device_id,)).fetchone()
+            held = (r["applied_version"] or 0) if r else 0
+            target["version"] = max(int(target.get("version") or 0), held) + 1
+            conn.execute("UPDATE sites SET data=? WHERE site_id=?", (json.dumps(target, ensure_ascii=False), site_id))
+            d["site_id"] = site_id
+            conn.execute("UPDATE devices SET data=? WHERE device_id=?", (json.dumps(d, ensure_ascii=False), device_id))
+            conn.execute("INSERT INTO device_site_applied(device_id, applied_version, apply_error) VALUES (?,0,NULL) "
+                         "ON CONFLICT(device_id) DO UPDATE SET applied_version=0, applied_at=NULL, apply_error=NULL", (device_id,))
+        devs = [x["device_id"] for x in conn.execute("SELECT device_id FROM devices WHERE json_extract(data,'$.site_id')=?", (site_id,))]
+        summaries = {x: site_summary(conn, x, site_id) for x in devs}
+        view = device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone())
+    for x, summ in summaries.items():
+        hub.publish("device_config", {"device_id": x, "kind": "site", **summ})
+    return {**view, "moved_by": user}
+
+
 @app.post("/api/devices/{device_id}/credentials")
 async def rotate_credentials(device_id: str, user: str = Depends(dashboard_user)):
     """젯슨 설정값을 잃어버렸을 때: 장치 토큰과 SRT 송출 비밀번호를 새로 발급한다 (이전 값은 즉시 무효)."""
@@ -1478,11 +1545,11 @@ def events_csv(request: Request, user: str = Depends(dashboard_user)):
     where, args = filter_sql(dict(request.query_params))
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["사건 ID", "발생 시각", "서버 수신", "지점", "장치", "종류", "색상", "야간", "신뢰도", "방송", "상태", "회수"])
+    w.writerow(["사건 ID", "발생 시각", "서버 수신", "지점", "장치", "종류", "색상", "야간", "방송", "상태", "회수"])
     with db() as conn:
         for r in conn.execute(f"SELECT * FROM events WHERE {where} ORDER BY ts DESC", args):
             e = event_view(conn, r)
-            w.writerow([e["event_id"], e["ts"], e["received_at"], (e.get("site") or {}).get("name", e["site_id"]), e["device_id"], e["detection"]["class"], e["detection"].get("color"), e["detection"].get("night"), e["detection"]["conf"], e["announce"]["played"], e["review"]["state"], e["outcome"]["retrieved"]])
+            w.writerow([e["event_id"], e["ts"], e["received_at"], (e.get("site") or {}).get("name", e["site_id"]), e["device_id"], e["detection"]["class"], e["detection"].get("color"), e["detection"].get("night"), e["announce"]["played"], e["review"]["state"], e["outcome"]["retrieved"]])
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=clean-guard-events.csv"})
 
 
@@ -1493,6 +1560,31 @@ def get_event(event_id: str, user: str = Depends(dashboard_user)):
         if not row:
             raise HTTPException(404, "사건을 찾을 수 없습니다.")
         return public_event(event_view(conn, row))
+
+
+@app.delete("/api/events/{event_id}")
+def delete_event(event_id: str, user: str = Depends(dashboard_user)):
+    with _db_lock, db() as conn:
+        done = delete_events(conn, [event_id], user)
+    if not done:
+        raise HTTPException(404, "사건을 찾을 수 없습니다.")
+    hub.publish("event_deleted", {"event_ids": done, "by": user})
+    return {"deleted": done, "by": user}
+
+
+@app.post("/api/events/delete")
+async def delete_events_bulk(request: Request, user: str = Depends(dashboard_user)):
+    b = await read_json(request)
+    ids = b.get("event_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
+        raise HTTPException(422, "event_ids 목록이 필요합니다.")
+    if len(ids) > 1000:
+        raise HTTPException(422, "한 번에 1000건까지 삭제할 수 있습니다.")
+    with _db_lock, db() as conn:
+        done = delete_events(conn, ids, user)
+    if done:
+        hub.publish("event_deleted", {"event_ids": done, "by": user})
+    return {"deleted": done, "by": user}
 
 
 @app.get("/api/events/{event_id}/raw")
