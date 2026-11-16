@@ -997,6 +997,19 @@ def set_clip_state(event_id: str, unless_clip: bool = False, **fields) -> dict |
 FFMPEG = os.environ.get("CLEAN_GUARD_FFMPEG", r"C:\server\ffmpeg\ffmpeg.exe")
 
 
+def replace_retry(src: Path, dst: Path, tries: int = 10) -> None:
+    """Windows 에서는 대상 파일을 누가 읽는 중이면 교체가 거부된다(WinError 5/32). 잠깐씩 기다리며 다시 시도."""
+    import time
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.1 * (i + 1))
+
+
 def wav_duration(path: Path) -> float | None:
     """WAV 재생 길이(초). 표준 PCM 이 아니면 None."""
     import wave
@@ -1021,7 +1034,7 @@ def trim_clip(path: Path, offset_s: float, duration_s: float) -> float | None:
             raise RuntimeError("empty output")
         probe = subprocess.run([str(Path(FFMPEG).with_name("ffprobe.exe")), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
                                capture_output=True, text=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        os.replace(out, path)
+        replace_retry(out, path)
         return float(probe.stdout.strip() or 0) or duration_s
     except Exception as err:  # noqa: BLE001
         print("clip trim failed:", err)
@@ -1111,7 +1124,7 @@ async def make_clip(event_id: str) -> None:
         return
     tmp = folder / "clip.mp4.tmp"
     tmp.write_bytes(data)
-    os.replace(tmp, folder / "clip.mp4")
+    replace_retry(tmp, folder / "clip.mp4")
     url = f"/snapshots/{folder.relative_to(SNAP_DIR).as_posix()}/clip.mp4"
     if set_clip_state(event_id, clip=url, clip_status="ready", clip_source="server", clip_note=note,
                       clip_range=[iso(start), iso(end)], clip_size=len(data)) is None:
@@ -1246,7 +1259,7 @@ async def event_media(event_id: str, device_id: str = Depends(device_auth), snap
                     raise HTTPException(415, "announce_audio 는 WAV 파일(RIFF/WAVE)이어야 합니다.")
             tmp = folder / (fname + ".tmp")
             tmp.write_bytes(data)
-            os.replace(tmp, folder / fname)
+            replace_retry(tmp, folder / fname)
             saved[name] = f"/snapshots/{folder.relative_to(SNAP_DIR).as_posix()}/{fname}"
             # 젯슨은 size·sha256 이 로컬 파일과 같을 때만 로컬 파일을 지운다
             files[name] = {"url": saved[name], "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
@@ -1378,7 +1391,7 @@ async def put_thumbnail(device_id: str, request: Request, token_device: str = De
     folder.mkdir(parents=True, exist_ok=True)
     tmp = folder / "latest.tmp"
     tmp.write_bytes(data)
-    os.replace(tmp, folder / "latest.jpg")
+    replace_retry(tmp, folder / "latest.jpg")
     return {"url": f"/snapshots/_thumbs/{device_id}/latest.jpg", "ts": iso(now_utc())}
 
 

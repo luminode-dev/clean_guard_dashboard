@@ -204,3 +204,9 @@ test('announce audio (WAV) is passed through to the dashboard event model',async
  assert.equal(e.media.announce_audio_s,4.2);
  const {api:none}=make();assert.equal((await none.request('/api/events')).items[0].media.announce_audio,null);
 });
+
+test('stream state keeps the server video flag so idle cameras are not offered as live',async()=>{
+ const {api}=make({extra:{'/api/devices/JT-GN-0009/stream':()=>response(200,{device_id:'JT-GN-0009',connected:false,video:{publishing:false},device_status:'offline',live:{protocol:'webrtc',url:'https://live.example/site09_cam1/whep',stream:'site09_cam1'}})}});
+ const s=await api.request('/api/devices/JT-GN-0009/stream');
+ assert.equal(s.video.publishing,false);assert.equal(s.device_status,'offline');assert.equal(s.connected,false);assert.ok(s.live.url.endsWith('/whep'));
+});

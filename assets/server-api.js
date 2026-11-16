@@ -1,7 +1,7 @@
 // 실제 서버(Caddy → FastAPI) 연결 어댑터.
 // app.js 는 demo-api.js 와 같은 request(url, options) 계약만 사용하므로, 여기서 서버 응답을 화면 모델로 맞춥니다.
 // 서버가 아직 제공하지 않는 조회 엔드포인트(404)는 /api/events 목록으로 파생 계산합니다.
-import {summary,day,hour} from './demo-api.js?v=202611161204';
+import {summary,day,hour} from './demo-api.js?v=202611161228';
 
 const DEFAULTS={mode:'auto',apiBase:'',wsPath:'/ws/events',mediaBase:'/snapshots',live:{protocol:'webrtc'},sites:[],devices:[],auth:null};
 const STATES=['new','reviewing','confirmed','actioned','dismissed'];
@@ -67,7 +67,7 @@ export function createServerApi({config={},fetcher,now=()=>new Date(),storage}={
  // §5.1 썸네일 {url,ts,size} · §5.2 라이브 {protocol,url,variants,expires_at} 평면 응답을 화면 계약 {thumbnail,live} 로 정리
  function normalizeStream(s,device){
   if(!s||typeof s!=='object')return null;
-  const out={connected:true,ts:s.ts||now().toISOString()};
+  const out={connected:s.connected??true,ts:s.ts||now().toISOString(),...(s.video!==undefined?{video:s.video}:{}),...(s.device_status?{device_status:s.device_status}:{})};
   if(s.thumbnail?.url)out.thumbnail=s.thumbnail;
   if(s.live?.url)out.live={headers:{},...s.live};
   if(s.url&&s.protocol)out.live={protocol:s.protocol==='hls'?'hls':'webrtc',url:s.url,headers:{},stream:device?.stream,variants:s.variants,expires_at:s.expires_at,resolution:s.resolution};

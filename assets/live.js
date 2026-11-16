@@ -46,6 +46,7 @@ export class LivePlayer {
     if(retry&&!live.headers?.Authorization){try{sessionStorage.removeItem(VIEWER_KEY);}catch{}const auth=askViewer();if(auth&&!this.closed)return this.start({...live,headers:{...(live.headers||{}),Authorization:auth}},false);}
     throw new Error('영상 viewer 계정 인증에 실패했습니다. config.js 의 live.user / live.pass 를 확인하세요.');
    }
+   if(response.status===404){this.pc.close();this.pc=null;this.setState('ended','젯슨이 지금 영상을 보내지 않습니다 (송출 없음). 젯슨 전원·네트워크와 SRT 송출을 확인하세요.');return;}
    if(!response.ok)throw new Error('미디어 서버 연결 실패 ('+response.status+') · '+live.url);
    const location=response.headers.get('Location');if(location)this.session=new URL(location,live.url).href;
    await this.pc.setRemoteDescription({type:'answer',sdp:await response.text()});

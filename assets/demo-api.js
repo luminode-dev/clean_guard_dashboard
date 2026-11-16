@@ -1,4 +1,4 @@
-import {validateZones} from './roi-editor.js?v=202611161204';
+import {validateZones} from './roi-editor.js?v=202611161228';
 const KEY='clean-guard-ui-demo-v1';
 const DEMO_ANNOUNCE={enabled:true,voice:'M4',speed:1,template:'[{장소}에 ][{색상} ]{종류}를 무단으로 버리셨습니다. 되가져가 주시기 바랍니다. 이곳은 CCTV 녹화 중입니다.',classes:{'쓰레기봉투':'쓰레기봉투','종이박스':'종이 상자','페트':'페트병','캔':'캔','병':'유리병','플라스틱':'플라스틱','스티로폼':'스티로폼','대형가구':'대형 가구','가전제품':'가전제품','의류':'옷'},colors:['빨간색','주황색','노란색','초록색','파란색','보라색','갈색','회색','검은색','흰색']};
 const copy=v=>structuredClone(v);
