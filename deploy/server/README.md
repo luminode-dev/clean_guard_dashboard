@@ -34,6 +34,10 @@
 
 경로·순환 녹화·시청 권한은 정규식(`~^site\d+_cam\d+$`) 하나로 모든 카메라에 적용되므로 장치를 추가해도 고칠 필요가 없습니다. 분실 시 `POST /api/devices/{id}/credentials` 로 토큰과 SRT 비밀번호를 재발급(이전 값 즉시 무효), `DELETE /api/devices/{id}` 로 장치·토큰·송출 계정을 삭제합니다(이미 받은 사건과 미디어는 유지).
 
+## 방송 설정 (장치별)
+
+대시보드 장치 상세의 **방송 설정**에서 목소리(Supertonic M1~M5, F1~F5 또는 젯슨이 하트비트 `tts.voices` 로 알린 목록), 속도, 문구 틀(`{장소}` `{색상}` `{종류}`, `[ … ]` 선택 구간, 조사 자동 수정), 종류별 읽는 말, 색상 목록을 저장합니다(`PUT /api/devices/{id}/announce`, `device_announce` 테이블, 버전 충돌 409). 하트비트 응답 `config.announce_version` → 젯슨이 `GET /api/device/config` 의 `announce` 를 `config/announce.json` 으로 저장·사전 렌더링 → `ack` 로 보고합니다. 미리듣기는 `POST /api/devices/{id}/announce/preview` 로 작업을 만들고, 젯슨이 대기 연결 `GET /api/device/jobs?wait=25` 로 즉시 받아 합성한 WAV 를 `POST /api/device/jobs/{job_id}/result` 로 올립니다(60초 시간 초과, 결과는 `snapshots/_preview` 에 1시간 보관). 문구 렌더링 규칙의 참고 구현은 `render_phrase` 입니다.
+
 ## 방송 음성
 
 미디어 업로드의 `announce_audio` 파트로 젯슨이 방송한 TTS 음성(WAV, RIFF/WAVE 헤더 확인, 10 MB 이하, 아니면 415)을 받아 사건 폴더의 `announce.wav` 로 저장합니다. `media.announce_audio`(URL)와 `announce_audio_s`(재생 길이)가 사건에 붙고, 대시보드 사건 상세와 목록 방송 칸에서 재생됩니다. 사건과 함께 1000건 보존 규칙으로 지워집니다.

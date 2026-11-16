@@ -18,7 +18,9 @@
 | 사건 전후 클립 | 서버가 자동 생성 (2026-10-04 변경, 젯슨 작업 불필요) |
 | ROI 원격 설정 | 구현 확인 (v4 적용, 2026-10-04) |
 | 설치 위치 원격 설정 (`site_version`) | **미구현** · 2026-10-05 추가 (6번 항목) |
-| 방송 음성 WAV (`announce_audio`) | **미구현** · 2026-10-05 추가 (7번 항목) |
+| 방송 음성 WAV (`announce_audio`) | 구현 확인 |
+| 설치 위치 원격 설정 | 구현 확인 (v2 적용) |
+| 방송 설정·미리듣기 (`announce_version`, `/api/device/jobs`) | **미구현** · 2026-11-16 추가 (8번 항목) |
 | 썸네일 | 수신 시작 (2026-10-04 16:04 확인) |
 
 요청 사항은 우선순위 순입니다.
@@ -264,6 +266,137 @@ Content-Type: image/jpeg
 - 서버 저장 위치: 사건 폴더의 `announce.wav`. 사건이 보존 규칙(1000건)으로 지워질 때 함께 지워집니다.
 
 **완료 확인**: 방송한 사건의 사건 관리 목록 방송 칸에 "▶ 음성" 버튼이 생기고, 사건 상세 방송 문구 아래에서 재생됩니다.
+
+## 8. [신규] 방송 설정 원격 적용 (config/announce.json) · 미리듣기 — 서버 구현 완료 2026-11-16
+
+운영자가 대시보드 장치 상세의 **방송 설정**에서 장치별로 목소리(Supertonic M1~M5, F1~F5), 속도, 방송 문구 틀을 정합니다. 저장 전에 **미리듣기**로 이 젯슨의 실제 목소리를 들어 볼 수 있고, 저장하면 ROI·설치 위치와 같은 방식으로 젯슨에 전달됩니다.
+
+### 8.1 설정 받기 · 적용 보고 (ROI 와 동일)
+
+1. 하트비트 본문 `config` 에 `announce_version` 을 넣습니다 (처음엔 0). 지원하는 목소리 목록도 `tts.voices` 로 보내 주면 화면 선택지에 그대로 나옵니다.
+   ```json
+   { "config": { "roi_version": 11, "site_version": 2, "announce_version": 0 },
+     "tts": { "worker": "ready", "voices": ["M1","M2","M3","M4","M5","F1","F2","F3","F4","F5"] } }
+   ```
+2. 하트비트 응답 `config.announce_version` 이 로컬보다 크면 `GET /api/device/config` 의 `announce` 를 **`config/announce.json`** 에 원자적으로 저장합니다.
+3. 적용 결과: `POST /api/device/config/ack` 에 `{"announce_version": N, "ok": true}` (실패 시 `"ok": false, "error": "사유"`).
+
+**config/announce.json**
+
+```json
+{
+  "version": 3,
+  "enabled": true,
+  "voice": "F2",
+  "speed": 1.1,
+  "template": "[{장소}에 ][{색상} ]{종류}를 무단으로 버리셨습니다. 되가져가 주시기 바랍니다. 이곳은 CCTV 녹화 중입니다.",
+  "classes": { "쓰레기봉투": "쓰레기봉투", "종이박스": "종이 상자", "페트": "페트병", "캔": "캔", "병": "유리병",
+               "플라스틱": "플라스틱", "스티로폼": "스티로폼", "대형가구": "대형 가구", "가전제품": "가전제품", "의류": "옷" },
+  "colors": ["빨간색", "주황색", "노란색", "초록색", "파란색", "보라색", "갈색", "회색", "검은색", "흰색"],
+  "updated_at": "2026-11-16T03:04:00Z", "updated_by": "admin"
+}
+```
+
+| 필드 | 의미 |
+|---|---|
+| `enabled` | false 면 탐지해도 방송하지 않음 (사건 `announce.played: false`, `suppressed_reason: "disabled"`) |
+| `voice`, `speed` | Supertonic 목소리 이름과 말하기 속도 (0.7~1.5) |
+| `template` | 방송 문구 틀. 규칙은 8.3 |
+| `classes` | 탐지 종류(`detection.class`) → 방송에서 읽는 말. 없는 종류는 종류 이름 그대로 |
+| `colors` | 쓰는 색상 단어 목록 (사전 렌더링 대상) |
+| 장소 | 문구의 `{장소}` 는 `config/site.json` 의 `name` |
+
+### 8.2 렌더링 방식 (사전 렌더링 + 사건 때 변수만 합성)
+
+설정을 적용할 때(그리고 `site.json` 이 바뀔 때):
+
+1. 문구 틀을 **고정 조각**과 **자리표시자 조각**으로 나눕니다. 예: `"를 무단으로 버리셨습니다. 되가져가 주시기 바랍니다. 이곳은 CCTV 녹화 중입니다."` 는 고정 조각입니다.
+2. 고정 조각은 지정 목소리·속도로 **미리 합성해 캐시**합니다. `{장소}` + 뒤 조사(예: "루미노드 사무실 앞에")도 장치마다 고정이므로 함께 미리 합성합니다.
+3. 색상 단어 목록과 종류별 읽는 말(+ 받침에 맞는 조사, 예: "캔을", "종이 상자를")은 미리 합성해 두거나, 처음 쓰일 때 합성해 캐시합니다.
+
+사건이 나면 렌더링 결과 문장을 조각 순서대로 이어 붙여(조각 사이 약 80 ms 무음) 재생합니다. 합성은 캐시에 없는 조각만 합니다.
+
+- 이어 붙인 소리가 어색하면 조각을 더 크게 묶거나(예: `"{색상} {종류}를"` 을 하나로) 문장 전체를 합성해도 됩니다. 판단은 젯슨 쪽에서 해 주세요.
+- 방송한 소리는 지금처럼 `announce_audio`(WAV)로 올리고, 사건의 `announce.phrase` 에는 실제 문장을 넣습니다.
+
+### 8.3 문구 틀 규칙 (서버·대시보드와 반드시 같게)
+
+- 자리표시자: `{장소}` `{색상}` `{종류}` 만 씁니다.
+- `[ … ]` 구간은 그 안의 자리표시자 값이 하나라도 비면 구간 전체를 뺍니다 (예: 장소 미설정, 색상 판별 실패).
+- 자리표시자 바로 뒤 조사 `을/를`, `은/는`, `이/가`, `과/와`, `으로/로` 는 값의 마지막 글자 받침에 맞게 고칩니다. `으로/로` 는 받침이 없거나 ㄹ 이면 "로". 한글이 아니면 쓰인 그대로 둡니다.
+- 연속 공백은 하나로 줄이고 앞뒤 공백은 지웁니다.
+
+참고 구현 (서버 `app.py` 와 동일, 그대로 써도 됩니다):
+
+```python
+import re
+TOKENS = ("장소", "색상", "종류")
+PARTICLES = [("으로", "로"), ("을", "를"), ("은", "는"), ("이", "가"), ("과", "와")]
+TOKEN_RE = re.compile(r"\{(" + "|".join(TOKENS) + r")\}")
+
+def _jong(ch):
+    code = ord(ch) - 0xAC00
+    return code % 28 if 0 <= code < 11172 else None
+
+def _fix_particle(value, rest):
+    if not value:
+        return "", 0
+    j = _jong(value[-1])
+    for with_jong, without in PARTICLES:
+        for written in (with_jong, without):
+            if rest.startswith(written):
+                if j is None:
+                    return written, len(written)
+                if with_jong == "으로":
+                    return ("로" if j in (0, 8) else "으로"), len(written)
+                return (with_jong if j else without), len(written)
+    return "", 0
+
+def _render(template, values):
+    out, i = [], 0
+    while i < len(template):
+        if template[i] == "[":
+            end = template.find("]", i)
+            inner = template[i + 1:end]
+            if all(str(values.get(n) or "").strip() for n in TOKEN_RE.findall(inner)):
+                out.append(_render(inner, values))
+            i = end + 1
+            continue
+        m = TOKEN_RE.match(template, i)
+        if m:
+            value = str(values.get(m.group(1)) or "").strip()
+            i = m.end()
+            particle, used = _fix_particle(value, template[i:])
+            out.append(value + particle)
+            i += used
+            continue
+        out.append(template[i])
+        i += 1
+    return "".join(out)
+
+def render_phrase(template, values):
+    return re.sub(r"\s{2,}", " ", _render(template, values)).strip()
+
+# 사건 때: values = {"장소": site["name"], "색상": detection["color"] or "", "종류": announce["classes"].get(cls, cls)}
+```
+
+### 8.4 미리듣기 (대기 연결)
+
+화면에서 미리듣기를 누르면 서버가 이 장치에 합성 작업을 만듭니다. 젯슨은 **항상 하나의 대기 연결**을 유지하다가 작업을 받으면 바로 합성해 올립니다.
+
+1. 반복: `GET /api/device/jobs?wait=25` (Bearer). 작업이 생기면 즉시, 없으면 25초 뒤 `{"jobs": []}` 로 응답합니다. 응답을 받으면 바로 다시 요청합니다. 오류·연결 실패 시 5초 쉬고 다시 요청합니다.
+   ```json
+   { "jobs": [ { "job_id": "PV-8e3f3bc80fb3", "kind": "tts_preview", "text": "정문에 빨간색 캔을 버리지 마세요. 되가져가 주세요.", "voice": "F2", "speed": 1.1 } ] }
+   ```
+2. `text` 를 `voice`·`speed` 로 합성합니다. **스피커로 재생하지 않습니다.** 캐시에도 넣지 않습니다(저장 전 설정일 수 있음).
+3. 결과 업로드: `POST /api/device/jobs/{job_id}/result` (multipart)
+   - 성공: `audio` = WAV (RIFF/WAVE, 10 MB 이하)
+   - 실패: `error` = 사유 문자열
+4. 서버는 60초 안에 결과가 없으면 화면에 "젯슨 응답 없음"으로 표시합니다.
+
+하트비트 응답의 `jobs_pending` 이 1 이상이면 대기 연결이 끊긴 상태일 수 있으니 바로 `GET /api/device/jobs` 를 한 번 호출해 주세요.
+
+**완료 확인**: 대시보드 방송 설정에서 목소리를 바꿔 미리듣기 → 몇 초 안에 그 목소리로 재생됨. 저장 → 30초 안에 "젯슨 적용됨", 다음 사건 방송이 새 문구·목소리로 나옴.
 
 ## 참고
 

@@ -145,6 +145,9 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS alerts (alert_id TEXT PRIMARY KEY, ts TEXT, device_id TEXT, kind TEXT, data TEXT NOT NULL, acked INTEGER DEFAULT 0, resolved INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS raw_access (at TEXT, user TEXT, event_id TEXT);
             CREATE TABLE IF NOT EXISTS deleted_events (event_id TEXT PRIMARY KEY, at TEXT, user TEXT);
+            CREATE TABLE IF NOT EXISTS device_announce (
+                device_id TEXT PRIMARY KEY, version INTEGER DEFAULT 0, data TEXT NOT NULL, updated_at TEXT,
+                applied_version INTEGER DEFAULT 0, applied_at TEXT, apply_error TEXT);
             CREATE TABLE IF NOT EXISTS device_site_applied (
                 device_id TEXT PRIMARY KEY, applied_version INTEGER DEFAULT 0, applied_at TEXT, apply_error TEXT);
             CREATE TABLE IF NOT EXISTS device_config (
@@ -354,6 +357,7 @@ def device_view(conn, row) -> dict:
         "site": site_of(conn, d.get("site_id", "")),
         "roi": roi_summary(conn, row["device_id"]),
         "site_config": site_summary(conn, row["device_id"], d.get("site_id")),
+        "announce_config": announce_summary(conn, row["device_id"]),
         "last_seen_s": int(age) if age is not None else None,
         "video": stream_state(d.get("stream")),
     }
@@ -576,6 +580,180 @@ def evaluate_device_alerts(conn, device_id: str) -> None:
         resolve_alerts(conn, device_id, ["stream_lost"])
 
 
+# ---------------------------------------------------------------- 방송 설정 (장치별 목소리·속도·문구 틀 → 젯슨 config/announce.json)
+# 문구 틀 문법: {장소} {색상} {종류} 자리표시자, [ … ] 는 안의 자리표시자 값이 하나라도 비면 통째로 빠지는 구간.
+# 자리표시자 바로 뒤의 을/를 · 은/는 · 이/가 · 과/와 · 으로/로 는 값의 받침에 맞게 자동으로 고친다.
+ANNOUNCE_TOKENS = ("장소", "색상", "종류")
+DEFAULT_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]
+DEFAULT_ANNOUNCE = {
+    "enabled": True,
+    "voice": "M4",
+    "speed": 1.0,
+    "template": "[{장소}에 ][{색상} ]{종류}를 무단으로 버리셨습니다. 되가져가 주시기 바랍니다. 이곳은 CCTV 녹화 중입니다.",
+    "classes": {"쓰레기봉투": "쓰레기봉투", "종이박스": "종이 상자", "페트": "페트병", "캔": "캔", "병": "유리병", "플라스틱": "플라스틱",
+                "스티로폼": "스티로폼", "대형가구": "대형 가구", "가전제품": "가전제품", "의류": "옷"},
+    "colors": ["빨간색", "주황색", "노란색", "초록색", "파란색", "보라색", "갈색", "회색", "검은색", "흰색"],
+}
+_PARTICLES = [("으로", "로"), ("을", "를"), ("은", "는"), ("이", "가"), ("과", "와")]
+
+
+def _jong(ch: str) -> int | None:
+    """한글 음절의 받침 번호 (0=없음, 8=ㄹ). 한글이 아니면 None."""
+    code = ord(ch) - 0xAC00
+    return code % 28 if 0 <= code < 11172 else None
+
+
+def _fix_particle(value: str, rest: str) -> tuple[str, int]:
+    """value 뒤에 오는 rest 의 첫 조사를 받침에 맞게 고친 문자열과, rest 에서 소비한 글자 수."""
+    if not value:
+        return "", 0
+    j = _jong(value[-1])
+    for with_jong, without in _PARTICLES:
+        for written in (with_jong, without):
+            if rest.startswith(written):
+                if j is None:
+                    return written, len(written)
+                if with_jong == "으로":
+                    return ("로" if j in (0, 8) else "으로"), len(written)
+                return (with_jong if j else without), len(written)
+    return "", 0
+
+
+def render_phrase(template: str, values: dict) -> str:
+    """문구 틀 + 값 → 실제 방송 문장. 젯슨도 같은 규칙으로 구현한다 (handoff §3.9 참고 구현)."""
+    return re.sub(r"\s{2,}", " ", _render(template, values)).strip()
+
+
+def _render(template: str, values: dict) -> str:
+    out, i = [], 0
+    while i < len(template):
+        ch = template[i]
+        if ch == "[":
+            end = template.find("]", i)
+            inner = template[i + 1:end]
+            names = re.findall(r"\{(" + "|".join(ANNOUNCE_TOKENS) + r")\}", inner)
+            if all(str(values.get(n) or "").strip() for n in names):
+                out.append(_render(inner, values))
+            i = end + 1
+            continue
+        m = re.match(r"\{(" + "|".join(ANNOUNCE_TOKENS) + r")\}", template[i:])
+        if m:
+            value = str(values.get(m.group(1)) or "").strip()
+            i += m.end()
+            particle, used = _fix_particle(value, template[i:])
+            out.append(value + particle)
+            i += used
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def validate_announce(b: dict) -> dict:
+    voice = str(b.get("voice") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,16}", voice):
+        raise HTTPException(422, "목소리를 선택하세요.")
+    try:
+        speed = round(float(b.get("speed", 1.0)), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(422, "속도는 숫자여야 합니다.")
+    if not 0.7 <= speed <= 1.5:
+        raise HTTPException(422, "속도는 0.7 ~ 1.5 사이여야 합니다.")
+    template = str(b.get("template") or "").strip()
+    if not 5 <= len(template) <= 300:
+        raise HTTPException(422, "방송 문구는 5~300자여야 합니다.")
+    bad = [t for t in re.findall(r"\{([^{}]*)\}", template) if t not in ANNOUNCE_TOKENS]
+    if bad:
+        raise HTTPException(422, f"쓸 수 없는 자리표시자입니다: {', '.join('{' + t + '}' for t in bad)} (쓸 수 있는 것: {{장소}} {{색상}} {{종류}})")
+    depth = 0
+    for ch in template:
+        depth += 1 if ch == "[" else -1 if ch == "]" else 0
+        if depth not in (0, 1):
+            raise HTTPException(422, "대괄호 [ ] 는 짝이 맞아야 하고 겹칠 수 없습니다.")
+    if depth:
+        raise HTTPException(422, "대괄호 [ ] 의 짝이 맞지 않습니다.")
+    classes = b.get("classes") if isinstance(b.get("classes"), dict) else {}
+    if len(classes) > 40 or any(not str(k).strip() or not str(v).strip() or len(str(v)) > 20 or len(str(k)) > 20 for k, v in classes.items()):
+        raise HTTPException(422, "종류별 읽는 말은 40개 이하, 각 20자 이하여야 합니다.")
+    colors = b.get("colors") if isinstance(b.get("colors"), list) else []
+    if len(colors) > 30 or any(not str(c).strip() or len(str(c)) > 12 for c in colors):
+        raise HTTPException(422, "색상은 30개 이하, 각 12자 이하여야 합니다.")
+    return {"enabled": b.get("enabled", True) is not False, "voice": voice, "speed": speed, "template": template,
+            "classes": {str(k).strip(): str(v).strip() for k, v in classes.items()}, "colors": [str(c).strip() for c in colors]}
+
+
+def announce_row(conn, device_id: str):
+    return conn.execute("SELECT * FROM device_announce WHERE device_id=?", (device_id,)).fetchone()
+
+
+def announce_summary(conn, device_id: str) -> dict:
+    r = announce_row(conn, device_id)
+    return {"version": r["version"] if r else 0, "applied_version": (r["applied_version"] or 0) if r else 0,
+            "apply_state": roi_state(r) if r else "none", "apply_error": r["apply_error"] if r else None}
+
+
+def announce_document(conn, device_id: str) -> dict:
+    r = announce_row(conn, device_id)
+    doc = json.loads(r["data"]) if r else {**DEFAULT_ANNOUNCE, "version": 0, "updated_at": None, "updated_by": None}
+    doc["device_id"] = device_id
+    return doc
+
+
+def mark_announce_applied(conn, device_id: str, version: int, ok: bool = True, error: str | None = None) -> bool:
+    r = announce_row(conn, device_id)
+    if not r or not isinstance(version, int) or version > r["version"]:
+        return False
+    if ok:
+        if version <= (r["applied_version"] or 0):
+            return False
+        conn.execute("UPDATE device_announce SET applied_version=?, applied_at=?, apply_error=NULL WHERE device_id=?", (version, iso(now_utc()), device_id))
+    else:
+        conn.execute("UPDATE device_announce SET apply_error=? WHERE device_id=?", (str(error or "적용 실패")[:300], device_id))
+    return True
+
+
+def device_voices(conn, device_id: str) -> list[str]:
+    hb = latest_heartbeat(conn, device_id)
+    voices = ((json.loads(hb["data"]).get("tts") or {}).get("voices") if hb else None) or []
+    return [str(v) for v in voices if re.fullmatch(r"[A-Za-z0-9_-]{1,16}", str(v))] or DEFAULT_VOICES
+
+
+def device_site_name(conn, device_id: str) -> str:
+    d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
+    return (site_of(conn, json.loads(d["data"]).get("site_id", "")) or {}).get("name", "") if d else ""
+
+
+# ---------- 미리듣기 작업 (서버 → 젯슨 즉시 전달). 젯슨은 GET /api/device/jobs?wait=25 로 대기 연결을 유지한다.
+JOB_TIMEOUT_S = 60
+_jobs: dict[str, dict] = {}
+_job_events: dict[str, asyncio.Event] = {}
+
+
+def _job_event(device_id: str) -> asyncio.Event:
+    if device_id not in _job_events:
+        _job_events[device_id] = asyncio.Event()
+    return _job_events[device_id]
+
+
+def expire_jobs() -> None:
+    now = now_utc().timestamp()
+    for j in list(_jobs.values()):
+        if j["status"] in ("queued", "sent") and now - j["created"] > JOB_TIMEOUT_S:
+            j.update(status="timeout", error="젯슨이 시간 안에 응답하지 않았습니다. 젯슨이 켜져 있고 미리듣기 대기 연결(/api/device/jobs)을 유지하는지 확인하세요.")
+            hub.publish("announce_preview", {"device_id": j["device_id"], "job_id": j["job_id"], "status": "timeout", "error": j["error"]})
+        if now - j["created"] > 3600:
+            _jobs.pop(j["job_id"], None)
+    prev = SNAP_DIR / "_preview"
+    if prev.exists():
+        for f in prev.rglob("*.wav"):
+            if now - f.stat().st_mtime > 3600:
+                f.unlink(missing_ok=True)
+
+
+def job_view(j: dict) -> dict:
+    return {k: j.get(k) for k in ("job_id", "device_id", "kind", "status", "text", "voice", "speed", "audio", "audio_s", "error", "created_at", "done_at")}
+
+
 WATCHDOG_INTERVAL_S = 10
 _last_device_state: dict[str, tuple] = {}
 
@@ -598,6 +776,7 @@ async def watchdog() -> None:
                     _last_device_state[r["device_id"]] = state
                 enforce_retention(conn)
                 enforce_clip_retention(conn)
+            expire_jobs()
         except Exception as e:  # noqa: BLE001
             print("watchdog error:", e)
         for c in changes:
@@ -1117,6 +1296,8 @@ async def heartbeat(request: Request, device_id: str = Depends(device_auth)):
         roi_changed = isinstance(reported, int) and mark_roi_applied(conn, device_id, reported)
         site_reported = cfg_body.get("site_version")
         site_changed = isinstance(site_reported, int) and mark_site_applied(conn, device_id, site_reported)
+        ann_reported = cfg_body.get("announce_version")
+        ann_changed = isinstance(ann_reported, int) and mark_announce_applied(conn, device_id, ann_reported)
         evaluate_device_alerts(conn, device_id)
         view = device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone())
     hub.publish("heartbeat", {"device_id": device_id, "status": view["status"], "ts": ts, "pipeline": body.get("pipeline"), "issues": body.get("issues", [])})
@@ -1124,8 +1305,12 @@ async def heartbeat(request: Request, device_id: str = Depends(device_auth)):
         hub.publish("device_config", {"device_id": device_id, "kind": "roi", **view["roi"]})
     if site_changed:
         hub.publish("device_config", {"device_id": device_id, "kind": "site", **view["site_config"]})
+    if ann_changed:
+        hub.publish("device_config", {"device_id": device_id, "kind": "announce", **view["announce_config"]})
     return {"device_id": device_id, "status": view["status"], "received_at": received,
-            "config": {"roi_version": view["roi"]["version"], "site_version": view["site_config"]["version"]}}
+            "config": {"roi_version": view["roi"]["version"], "site_version": view["site_config"]["version"],
+                       "announce_version": view["announce_config"]["version"]},
+            "jobs_pending": sum(1 for j in _jobs.values() if j["device_id"] == device_id and j["status"] == "queued")}
 
 
 @app.get("/api/device/config")
@@ -1135,16 +1320,17 @@ def device_config_for_device(device_id: str = Depends(device_auth)):
     with db() as conn:
         d = conn.execute("SELECT data FROM devices WHERE device_id=?", (device_id,)).fetchone()
         site_id = json.loads(d["data"]).get("site_id") if d else None
-        return {"device_id": device_id, "roi": roi_document(conn, device_id), "site": site_document(conn, site_id)}
+        return {"device_id": device_id, "roi": roi_document(conn, device_id), "site": site_document(conn, site_id),
+                "announce": announce_document(conn, device_id)}
 
 
 @app.post("/api/device/config/ack")
 async def device_config_ack(request: Request, device_id: str = Depends(device_auth)):
     """적용 결과 보고: {"roi_version": N, "ok": true} 또는 {"site_version": N, "ok": true} (둘 다 보내도 됨)."""
     body = await read_json(request)
-    version, site_version = body.get("roi_version"), body.get("site_version")
-    if not isinstance(version, int) and not isinstance(site_version, int):
-        raise HTTPException(422, "roi_version 또는 site_version(정수)이 필요합니다.")
+    version, site_version, ann_version = body.get("roi_version"), body.get("site_version"), body.get("announce_version")
+    if not any(isinstance(v, int) for v in (version, site_version, ann_version)):
+        raise HTTPException(422, "roi_version, site_version, announce_version 중 하나(정수)가 필요합니다.")
     ok = body.get("ok", True) is not False
     out: dict[str, Any] = {}
     with _db_lock, db() as conn:
@@ -1164,10 +1350,20 @@ async def device_config_ack(request: Request, device_id: str = Depends(device_au
                 raise HTTPException(409, f"서버 지점 설정 버전({current})보다 큰 버전입니다.")
             mark_site_applied(conn, device_id, site_version, ok, body.get("error"))
             out["site_config"] = site_summary(conn, device_id, site_id)
+        if isinstance(ann_version, int):
+            r = announce_row(conn, device_id)
+            if not r:
+                raise HTTPException(404, "이 장치에 방송 설정이 없습니다.")
+            if ann_version > r["version"]:
+                raise HTTPException(409, f"서버 방송 설정 버전({r['version']})보다 큰 버전입니다.")
+            mark_announce_applied(conn, device_id, ann_version, ok, body.get("error"))
+            out["announce_config"] = announce_summary(conn, device_id)
     if isinstance(version, int):
-        hub.publish("device_config", {"device_id": device_id, "kind": "roi", **{k: v for k, v in out.items() if k != "site_config"}})
+        hub.publish("device_config", {"device_id": device_id, "kind": "roi", **{k: v for k, v in out.items() if k not in ("site_config", "announce_config")}})
     if isinstance(site_version, int):
         hub.publish("device_config", {"device_id": device_id, "kind": "site", **out["site_config"]})
+    if isinstance(ann_version, int):
+        hub.publish("device_config", {"device_id": device_id, "kind": "announce", **out["announce_config"]})
     return out
 
 
@@ -1364,7 +1560,7 @@ def delete_device(device_id: str, user: str = Depends(dashboard_user)):
             except Exception as err:  # noqa: BLE001
                 raise HTTPException(500, f"미디어 서버 설정에서 송출 계정을 지우지 못했습니다: {err}")
         remove_device_token(device_id)
-        for table in ("devices", "device_config", "device_site_applied"):
+        for table in ("devices", "device_config", "device_site_applied", "device_announce"):
             conn.execute(f"DELETE FROM {table} WHERE device_id=?", (device_id,))
         conn.execute("DELETE FROM heartbeats WHERE device_id=?", (device_id,))
         conn.execute("UPDATE alerts SET resolved=1 WHERE device_id=? AND resolved=0", (device_id,))
@@ -1444,6 +1640,118 @@ async def maintenance(device_id: str, request: Request, user: str = Depends(dash
         else:
             evaluate_device_alerts(conn, device_id)
         return device_view(conn, conn.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone())
+
+
+@app.get("/api/devices/{device_id}/announce")
+def get_announce(device_id: str, user: str = Depends(dashboard_user)):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM devices WHERE device_id=?", (device_id,)).fetchone():
+            raise HTTPException(404, "장치가 없습니다.")
+        return {**announce_document(conn, device_id), **{k: v for k, v in announce_summary(conn, device_id).items() if k != "version"},
+                "voices": device_voices(conn, device_id), "site_name": device_site_name(conn, device_id), "tokens": list(ANNOUNCE_TOKENS)}
+
+
+@app.put("/api/devices/{device_id}/announce")
+async def put_announce(device_id: str, request: Request, user: str = Depends(dashboard_user)):
+    b = await read_json(request)
+    cfg = validate_announce(b)
+    with _db_lock, db() as conn:
+        if not conn.execute("SELECT 1 FROM devices WHERE device_id=?", (device_id,)).fetchone():
+            raise HTTPException(404, "장치가 없습니다.")
+        r = announce_row(conn, device_id)
+        current = r["version"] if r else 0
+        if b.get("base_version", current) != current:
+            raise HTTPException(409, "다른 사용자가 방송 설정을 먼저 수정했습니다. 다시 불러오세요.")
+        doc = {**cfg, "version": current + 1, "updated_at": iso(now_utc()), "updated_by": user}
+        if r:
+            conn.execute("UPDATE device_announce SET version=?, data=?, updated_at=?, apply_error=NULL WHERE device_id=?",
+                         (doc["version"], json.dumps(doc, ensure_ascii=False), doc["updated_at"], device_id))
+        else:
+            conn.execute("INSERT INTO device_announce(device_id, version, data, updated_at, applied_version) VALUES (?,?,?,?,0)",
+                         (device_id, doc["version"], json.dumps(doc, ensure_ascii=False), doc["updated_at"]))
+        summary = announce_summary(conn, device_id)
+        result = {**announce_document(conn, device_id), **{k: v for k, v in summary.items() if k != "version"},
+                  "voices": device_voices(conn, device_id), "site_name": device_site_name(conn, device_id), "tokens": list(ANNOUNCE_TOKENS)}
+    hub.publish("device_config", {"device_id": device_id, "kind": "announce", **summary})
+    return result
+
+
+@app.post("/api/devices/{device_id}/announce/preview")
+async def preview_announce(device_id: str, request: Request, user: str = Depends(dashboard_user)):
+    """화면의 미리듣기: 문장을 만들어 젯슨에 합성 작업을 보낸다. 결과는 GET …/preview/{job_id} 또는 WebSocket announce_preview."""
+    b = await read_json(request)
+    cfg = validate_announce(b)
+    sample = b.get("sample") if isinstance(b.get("sample"), dict) else {}
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM devices WHERE device_id=?", (device_id,)).fetchone():
+            raise HTTPException(404, "장치가 없습니다.")
+        site_name = device_site_name(conn, device_id)
+    cls = str(sample.get("종류") or next(iter(cfg["classes"]), "")).strip()
+    values = {"장소": sample.get("장소", site_name), "색상": sample.get("색상", (cfg["colors"] or [""])[0]), "종류": cfg["classes"].get(cls, cls)}
+    text = render_phrase(cfg["template"], values)
+    expire_jobs()
+    if sum(1 for j in _jobs.values() if j["device_id"] == device_id and j["status"] in ("queued", "sent")) >= 3:
+        raise HTTPException(429, "이 장치에 처리 중인 미리듣기가 많습니다. 잠시 후 다시 시도하세요.")
+    job = {"job_id": "PV-" + secrets.token_hex(6), "device_id": device_id, "kind": "tts_preview", "status": "queued", "text": text,
+           "voice": cfg["voice"], "speed": cfg["speed"], "created": now_utc().timestamp(), "created_at": iso(now_utc()), "by": user}
+    _jobs[job["job_id"]] = job
+    _job_event(device_id).set()
+    return job_view(job)
+
+
+@app.get("/api/devices/{device_id}/announce/preview/{job_id}")
+def preview_status(device_id: str, job_id: str, user: str = Depends(dashboard_user)):
+    expire_jobs()
+    j = _jobs.get(job_id)
+    if not j or j["device_id"] != device_id:
+        raise HTTPException(404, "미리듣기 작업이 없습니다.")
+    return job_view(j)
+
+
+@app.get("/api/device/jobs")
+async def device_jobs(wait: int = Query(0, ge=0, le=30), device_id: str = Depends(device_auth)):
+    """젯슨용 대기 연결: 처리할 작업이 있으면 바로, 없으면 wait 초까지 기다렸다가 돌려준다 (빈 목록이면 다시 요청)."""
+    def take():
+        out = []
+        for j in _jobs.values():
+            if j["device_id"] == device_id and j["status"] == "queued":
+                j["status"] = "sent"
+                out.append({"job_id": j["job_id"], "kind": j["kind"], "text": j["text"], "voice": j["voice"], "speed": j["speed"]})
+        return out
+    expire_jobs()
+    jobs = take()
+    if not jobs and wait:
+        ev = _job_event(device_id)
+        ev.clear()
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=wait)
+        except asyncio.TimeoutError:
+            pass
+        jobs = take()
+    return {"jobs": jobs}
+
+
+@app.post("/api/device/jobs/{job_id}/result")
+async def device_job_result(job_id: str, device_id: str = Depends(device_auth), audio: UploadFile | None = File(None), error: str | None = Form(None)):
+    """미리듣기 결과: audio = 합성한 WAV, 실패하면 error 에 사유."""
+    j = _jobs.get(job_id)
+    if not j or j["device_id"] != device_id:
+        raise HTTPException(404, "작업이 없습니다.")
+    if j["status"] in ("done", "error", "timeout"):
+        raise HTTPException(409, f"이미 끝난 작업입니다 ({j['status']}).")
+    if audio is None:
+        j.update(status="error", error=str(error or "젯슨이 합성에 실패했습니다.")[:300], done_at=iso(now_utc()))
+    else:
+        data = await audio.read()
+        if len(data) > 10 * 1024 * 1024 or not (len(data) > 44 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"):
+            raise HTTPException(415, "audio 는 10 MB 이하 WAV(RIFF/WAVE)여야 합니다.")
+        folder = SNAP_DIR / "_preview" / re.sub(r"[^A-Za-z0-9_-]", "_", device_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{job_id}.wav"
+        path.write_bytes(data)
+        j.update(status="done", audio=f"/snapshots/_preview/{folder.name}/{job_id}.wav", audio_s=wav_duration(path), done_at=iso(now_utc()))
+    hub.publish("announce_preview", job_view(j))
+    return job_view(j)
 
 
 @app.get("/api/devices/{device_id}/roi")

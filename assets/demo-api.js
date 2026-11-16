@@ -1,5 +1,6 @@
-import {validateZones} from './roi-editor.js?v=202611161151';
+import {validateZones} from './roi-editor.js?v=202611161204';
 const KEY='clean-guard-ui-demo-v1';
+const DEMO_ANNOUNCE={enabled:true,voice:'M4',speed:1,template:'[{장소}에 ][{색상} ]{종류}를 무단으로 버리셨습니다. 되가져가 주시기 바랍니다. 이곳은 CCTV 녹화 중입니다.',classes:{'쓰레기봉투':'쓰레기봉투','종이박스':'종이 상자','페트':'페트병','캔':'캔','병':'유리병','플라스틱':'플라스틱','스티로폼':'스티로폼','대형가구':'대형 가구','가전제품':'가전제품','의류':'옷'},colors:['빨간색','주황색','노란색','초록색','파란색','보라색','갈색','회색','검은색','흰색']};
 const copy=v=>structuredClone(v);
 export const day=v=>new Date(new Date(v).getTime()+32400000).toISOString().slice(0,10);
 export const hour=v=>new Date(new Date(v).getTime()+32400000).getUTCHours();
@@ -46,6 +47,7 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
    if(path==='/api/context')return {user:'시연 운영자',demo:true,investigator:false,server_time:now().toISOString()};
    if(path==='/api/sites')return state.sites;
    if(path==='/api/devices')return state.devices.map(d=>({...withSite(d),roi:roiSummary(d.device_id)}));
+   const annGet=path.match(/^\/api\/devices\/([^/]+)\/announce$/);if(annGet){const id=decodeURIComponent(annGet[1]);check(state.devices.some(d=>d.device_id===id),'장치가 없습니다.');const a=(state.announce||{})[id];const site=state.sites.find(s=>s.site_id===state.devices.find(d=>d.device_id===id).site_id);return {device_id:id,...copy(a||DEMO_ANNOUNCE),version:a?.version||0,applied_version:a?.version||0,apply_state:a?'applied':'none',voices:['M1','M2','M3','M4','M5','F1','F2','F3','F4','F5'],site_name:site?.name||'',tokens:['장소','색상','종류']};}
    const roiGet=path.match(/^\/api\/devices\/([^/]+)\/roi$/);if(roiGet){const id=decodeURIComponent(roiGet[1]);check(state.devices.some(d=>d.device_id===id),'장치가 없습니다.');return roiDoc(id);}
    if(path==='/api/alerts')return state.alerts;
    if(path==='/api/overview')return {summary:summary(state.events.filter(e=>day(e.ts)===day(now()))),device_counts:state.devices.reduce((a,d)=>(a[d.status]=(a[d.status]||0)+1,a),{}),all_pending:summary(state.events).pending,unacked_alerts:state.alerts.filter(a=>!a.acked&&!a.resolved).length};
@@ -64,6 +66,7 @@ export function createDemoApi({storage,now=()=>new Date()}={}){
    if(/^\/api\/devices\/[^/]+\/uptime$/.test(path))return {device_uptime_pct:null,observed_seconds:0};
   }
   if(method==='PUT'){
+   const annPut=path.match(/^\/api\/devices\/([^/]+)\/announce$/);if(annPut){const id=decodeURIComponent(annPut[1]);check(state.devices.some(d=>d.device_id===id),'장치가 없습니다.');const cur=(state.announce||{})[id]?.version||0;check((body.base_version??cur)===cur,'다른 사용자가 방송 설정을 먼저 수정했습니다. 다시 불러오세요.');check(String(body.template||'').trim().length>=5,'방송 문구는 5~300자여야 합니다.');state.announce={...(state.announce||{}),[id]:{enabled:body.enabled!==false,voice:body.voice,speed:body.speed,template:body.template,classes:copy(body.classes||{}),colors:copy(body.colors||[]),version:cur+1,updated_at:now().toISOString(),updated_by:'시연 운영자'}};return route('/api/devices/'+id+'/announce',{});}
    const sitePut=path.match(/^\/api\/sites\/([^/]+)$/);
    if(sitePut){const s=state.sites.find(x=>x.site_id===decodeURIComponent(sitePut[1]));check(s,'지점이 없습니다.');const cur=s.version||0;check((body.base_version??cur)===cur,'다른 사용자가 지점 정보를 먼저 수정했습니다. 다시 불러오세요.');check(String(body.name||'').trim(),'지점명을 입력하세요.');const l=body.location;check(l==null||(Number.isFinite(l.lat)&&Number.isFinite(l.lng)&&Math.abs(l.lat)<=90&&Math.abs(l.lng)<=180),'위도는 -90~90, 경도는 -180~180 사이 숫자여야 합니다.');Object.assign(s,{name:body.name.trim(),address:body.address||'',location:l?{lat:l.lat,lng:l.lng}:null,location_source:body.location_source||'manual',version:cur+1,updated_at:now().toISOString(),updated_by:'시연 운영자'},body.region?{region:{...s.region,...body.region}}:{});const devs=Object.fromEntries(state.devices.filter(d=>d.site_id===s.site_id).map(d=>[d.device_id,{version:s.version,applied_version:s.version,apply_state:'applied',apply_error:null}]));return {...copy(s),devices:devs};}
    const roiPut=path.match(/^\/api\/devices\/([^/]+)\/roi$/);

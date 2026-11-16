@@ -97,6 +97,7 @@ assets/realtime.js     /ws/events 실시간 수신 (자동 재접속)
 assets/demo-api.js     로컬 시연 데이터 어댑터
 assets/live.js         실시간 영상 플레이어 (MediaMTX WebRTC WHEP / HLS, viewer 인증)
 assets/roi-editor.js   ROI 다각형 편집기 (캔버스 오버레이, 0~1 정규화 좌표, 판정 규칙)
+assets/announce.js     방송 설정 패널 (목소리·속도·문구 틀, 젯슨 목소리 미리듣기, 문구 렌더링 규칙)
 assets/site-panel.js   설치 위치 패널 (주소 검색, 좌표 입력, 지도 지정, 젯슨 GPS, 적용 상태)
 assets/vendor/         Leaflet, hls.js 및 라이선스
 scripts/serve.mjs      개발용 정적 파일 서버 + API/WS 프록시
