@@ -1,11 +1,11 @@
-import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202611161251';
-import {LivePlayer} from './live.js?v=202611161251';
-import {createDemoApi} from './demo-api.js?v=202611161251';
-import {createServerApi} from './server-api.js?v=202611161251';
-import {connectEvents} from './realtime.js?v=202611161251';
-import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202611161251';
-import {mountSitePanel} from './site-panel.js?v=202611161251';
-import {mountAnnouncePanel} from './announce.js?v=202611161251';
+import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202611161339';
+import {LivePlayer} from './live.js?v=202611161339';
+import {createDemoApi} from './demo-api.js?v=202611161339';
+import {createServerApi} from './server-api.js?v=202611161339';
+import {connectEvents} from './realtime.js?v=202611161339';
+import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202611161339';
+import {mountSitePanel} from './site-panel.js?v=202611161339';
+import {mountAnnouncePanel} from './announce.js?v=202611161339';
 const config=window.CLEAN_GUARD_CONFIG||{};
 const demo=createDemoApi({storage:window.localStorage});
 const serverApi=createServerApi({config,storage:window.localStorage});
@@ -30,7 +30,7 @@ function options(items,value='',all='전체 지점'){return `<option value="">${
 function stateOptions(value,device=false){return `<option value="">전체 상태</option>`+(device?['online','degraded','offline','maintenance']:['new','reviewing','confirmed','actioned','dismissed']).map(s=>`<option value="${s}" ${value===s?'selected':''}>${labels[s]}</option>`).join('');}
 function panel(title,body,link='',count=''){return `<section class="panel"><div class="panel-head"><div class="panel-title"><h2>${title}</h2>${count!==''?`<span class="count">${count}</span>`:''}</div>${link}</div>${body}</section>`;}
 function link(text,page){return `<a class="panel-link" href="#${page}">${text} ↗</a>`;}
-function chartPanel(summary){const max=Math.max(...summary.by_hour),peak=summary.by_hour.indexOf(max);return panel('시간대별 탐지 현황',`<p class="chart-caption">오늘 00:00–23:59 · 한국 표준시</p><div class="chart-body">${hourChart(summary.by_hour)}</div><div class="chart-note">${icon('chart')} ${max?`<strong>${peak}시</strong>에 가장 많은 사건이 발생했습니다.`:'오늘 접수된 사건이 없습니다.'}</div>`,'<span class="badge online">오늘</span>');}
+function chartPanel(summary){const max=Math.max(...summary.by_hour),peak=summary.by_hour.indexOf(max);return panel('시간대별 탐지 현황',`<p class="chart-caption">오늘 00:00–23:59 · 한국 표준시</p>${max?`<div class="chart-body">${hourChart(summary.by_hour)}</div><div class="chart-note">${icon('chart')} <strong>${peak}시</strong>에 가장 많은 사건이 발생했습니다.</div>`:`<div class="chart-empty">${icon('chart')}<p>오늘 접수된 사건이 없습니다.</p></div>`}`,'<span class="badge online">오늘</span>');}
 async function load(){
  const serial=++loadSerial;$('#global-error').hidden=true;
  try{
