@@ -14,10 +14,13 @@ export function parseLatLng(text){
 }
 export function validLocation(lat,lng){return lat!=null&&lng!=null&&Math.abs(lat)<=90&&Math.abs(lng)<=180&&!(lat===0&&lng===0);}
 
-export function mountSitePanel({box,device,api,toast,esc,fmtDate,badge,demo,onSaved}){
+export function mountSitePanel({box,device,api,toast,esc,fmtDate,badge,demo,onSaved,sharedWith=()=>[]}){
  const site=device.site||{site_id:device.site_id};
  let state={editing:false,form:null,results:[],map:null,marker:null,cfg:device.site_config||{version:site.version||0,apply_state:site.version?'pending':'none'}};
  const badgeHtml=()=>{const st=state.cfg?.apply_state||'none',[cls,label]=SITE_STATES[st]||SITE_STATES.none;return `<span class="badge ${cls}"><i class="dot ${cls}"></i>${label}${state.cfg?.version?' · v'+state.cfg.version:''}</span>`;};
+ const devName=x=>x.name||x.device_id;
+ // 같은 지점을 쓰는 다른 장치. 지점 정보는 지점 단위로 저장되므로, 저장할 때 이 장치만 바꿀지 고른다.
+ const shareLine=()=>{const sh=sharedWith();return sh.length?`<p class="site-share">이 위치를 함께 쓰는 장치 ${sh.length}대: ${sh.map(x=>esc(devName(x))).join(', ')}</p>`:'';};
  const loc=()=>state.form?{lat:parseCoord(state.form.lat),lng:parseCoord(state.form.lng)}:site.location;
  function view(){
   const l=site.location;
@@ -25,15 +28,16 @@ export function mountSitePanel({box,device,api,toast,esc,fmtDate,badge,demo,onSa
    ${state.cfg?.apply_state==='failed'&&state.cfg.apply_error?`<p class="error">${esc(state.cfg.apply_error)}</p>`:''}
    <p class="site-line"><b>${esc(site.name||site.site_id||'지점 미지정')}</b></p>
    <p class="site-line">${esc(site.address||'주소 미입력')}</p>
+   ${shareLine()}
    <p class="site-line cell-sub">${l?`위도 ${l.lat.toFixed(6)} · 경도 ${l.lng.toFixed(6)}${site.location_source?' · '+({address:'주소 검색',gps:'GPS 좌표',manual:'직접 입력',map:'지도 지정',device:'젯슨 GPS'}[site.location_source]||''):''}`:'좌표가 없어 지도에 표시되지 않습니다.'}${site.updated_by?' · '+esc(site.updated_by)+' '+esc(fmtDate(site.updated_at)):''}</p>
    ${l?'<div id="site-map-mini" class="site-map"></div>':''}
    <div class="roi-tools"><button class="button" id="site-edit">위치 편집</button></div>
    <p class="footnote roi-help">${esc(device.hw?.model||'기기 정보 미등록')} · ${esc(device.device_id)} · 지점 ${esc(site.site_id||'-')}</p>`;
-  box.querySelector('#site-edit').onclick=()=>{state.editing=true;state.form={name:site.name||'',address:site.address||'',lat:site.location?.lat??'',lng:site.location?.lng??'',region:{...(site.region||{})},source:site.location_source||'manual'};render();};
+  box.querySelector('#site-edit').onclick=()=>{state.editing=true;state.form={scope:'device',name:site.name||'',address:site.address||'',lat:site.location?.lat??'',lng:site.location?.lng??'',region:{...(site.region||{})},source:site.location_source||'manual'};render();};
   if(l)drawMap(false);
  }
  function edit(){
-  const f=state.form,gps=device.gps&&validLocation(parseCoord(device.gps.lat),parseCoord(device.gps.lng))?device.gps:null;
+  const f=state.form,shared=sharedWith(),gps=device.gps&&validLocation(parseCoord(device.gps.lat),parseCoord(device.gps.lng))?device.gps:null;
   box.innerHTML=`<div class="roi-head"><h3>설치 위치 편집</h3><span id="site-badge">${badgeHtml()}</span></div>
    <div class="site-form">
     <label class="full">지점명<input id="site-name" maxlength="60" value="${esc(f.name)}" placeholder="예: 역삼1동 수거함 앞"></label>
@@ -44,10 +48,14 @@ export function mountSitePanel({box,device,api,toast,esc,fmtDate,badge,demo,onSa
     <p class="footnote full roi-help">지도 앱에서 복사한 "37.5000, 127.0365" 형식을 위도 칸에 붙여 넣어도 됩니다. 아래 지도를 클릭하거나 핀을 끌어 위치를 정할 수도 있습니다.</p>
     <div class="site-tools full">${gps?`<button class="button" id="site-gps" type="button">젯슨 GPS 위치 사용 (${Number(gps.lat).toFixed(5)}, ${Number(gps.lng).toFixed(5)})</button>`:''}<button class="button" id="site-reverse" type="button">좌표로 주소 채우기</button></div>
     <div id="site-map-edit" class="site-map full"></div>
+    ${shared.length?`<div class="site-scope full"><b>바꿀 범위</b>
+     <label><input type="radio" name="site-scope" value="device" ${f.scope==='device'?'checked':''}> 이 장치만 바꾸기 <small class="cell-sub">${shared.map(x=>esc(devName(x))).join(', ')} 은(는) 지금 위치 그대로</small></label>
+     <label><input type="radio" name="site-scope" value="site" ${f.scope==='site'?'checked':''}> 같은 위치를 쓰는 장치 모두 바꾸기 <small class="cell-sub">${shared.length+1}대 함께</small></label></div>`:''}
    </div>
    <p id="site-error" class="error" role="alert"></p>
    <div class="roi-actions"><button class="primary" id="site-save">저장 후 젯슨에 전송</button><button class="button" id="site-cancel">편집 취소</button></div>`;
   const $=s=>box.querySelector(s);
+  box.querySelectorAll('[name="site-scope"]').forEach(r=>r.onchange=()=>{f.scope=r.value;});
   const sync=()=>{f.name=$('#site-name').value;f.address=$('#site-address').value;
    const pasted=parseLatLng($('#site-lat').value);if(pasted&&/[, ]/.test($('#site-lat').value.trim())){$('#site-lat').value=pasted.lat;$('#site-lng').value=pasted.lng;f.source='gps';}
    f.lat=$('#site-lat').value;f.lng=$('#site-lng').value;};
@@ -74,10 +82,12 @@ export function mountSitePanel({box,device,api,toast,esc,fmtDate,badge,demo,onSa
    if((f.lat!==''||f.lng!=='')&&!validLocation(lat,lng)){$('#site-error').textContent='위도는 -90~90, 경도는 -180~180 사이 숫자여야 합니다.';return;}
    e.target.disabled=true;
    try{
-    const saved=await api('/api/sites/'+encodeURIComponent(site.site_id),{method:'PUT',body:JSON.stringify({base_version:site.version||0,name:f.name.trim(),address:f.address.trim(),location:validLocation(lat,lng)?{lat,lng}:null,location_source:f.source,region:f.region})});
-    Object.assign(site,saved);device.site=site;state.cfg=saved.devices?.[device.device_id]||{version:saved.version,applied_version:saved.version,apply_state:demo?'applied':'pending'};
+    const saved=await api('/api/sites/'+encodeURIComponent(site.site_id),{method:'PUT',body:JSON.stringify({base_version:site.version||0,name:f.name.trim(),address:f.address.trim(),location:validLocation(lat,lng)?{lat,lng}:null,location_source:f.source,region:f.region,...(f.scope==='device'?{only_device:device.device_id}:{})})});
+    const {devices:_d,split_from:splitFrom,...fresh}=saved;
+    Object.assign(site,fresh);device.site=site;if(splitFrom)device.site_id=site.site_id;state.cfg=saved.devices?.[device.device_id]||{version:saved.version,applied_version:saved.version,apply_state:demo?'applied':'pending'};
     state.editing=false;state.form=null;state.results=[];render();
-    toast(demo?'설치 위치를 저장했습니다 (시연 모드).':'설치 위치를 저장했습니다. 다음 하트비트(최대 30초)에 젯슨으로 전달됩니다.');onSaved?.(site);
+    onSaved?.({...site},{splitFrom});render();
+    toast((splitFrom?'이 장치의 설치 위치만 바꿨습니다. 다른 장치는 그대로입니다. ':'설치 위치를 저장했습니다. ')+(demo?'(시연 모드)':'다음 하트비트(최대 30초)에 젯슨으로 전달됩니다.'));
    }catch(err){$('#site-error').textContent=err.message;e.target.disabled=false;}
   };
   drawMap(true);

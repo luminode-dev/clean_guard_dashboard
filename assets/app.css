@@ -37,3 +37,8 @@
 .ann-color-add .button{min-height:26px;padding:3px 9px}
 .ann-words summary{cursor:pointer;font-size:11px;color:#496350}
 .site-form .ann-sample select{width:auto;min-width:90px}
+.site-share{font-size:11px;color:#8a6a1f;background:#fbf5e6;border-radius:5px;padding:5px 8px;margin:4px 0}
+.site-scope{display:grid;gap:5px;font-size:11px;color:#496350;background:#f6f9f8;border:1px solid #e3ebe7;border-radius:6px;padding:8px 10px}
+.site-scope b{font-size:10px;color:#7f9289;font-weight:600}
+.site-scope label{display:flex!important;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:#203335}
+.site-scope input{width:auto!important}

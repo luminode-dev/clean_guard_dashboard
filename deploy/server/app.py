@@ -1428,9 +1428,23 @@ async def add_site(request: Request, user: str = Depends(dashboard_user)):
     return s
 
 
+def new_site_id(conn, base: str) -> str:
+    """기존 지점 ID 형식(SITE-GN-0001)을 따라 비어 있는 다음 번호를 만든다."""
+    m = re.match(r"^(.*?)(\d+)$", base)
+    prefix, width = (m.group(1), len(m.group(2))) if m else (base + "-", 2)
+    used = {r["site_id"] for r in conn.execute("SELECT site_id FROM sites")}
+    nums = [int(x[len(prefix):]) for x in used if x.startswith(prefix) and x[len(prefix):].isdigit()]
+    n = max(nums, default=0) + 1
+    while f"{prefix}{n:0{width}d}" in used:
+        n += 1
+    return f"{prefix}{n:0{width}d}"
+
+
 @app.put("/api/sites/{site_id}")
 async def update_site(site_id: str, request: Request, user: str = Depends(dashboard_user)):
-    """설치 지점 이름·주소·좌표 수정 → 버전 증가 → 다음 하트비트 응답으로 젯슨에 전달 (config/site.json)."""
+    """설치 지점 이름·주소·좌표 수정 → 버전 증가 → 다음 하트비트 응답으로 젯슨에 전달 (config/site.json).
+    only_device 를 주면 그 장치만 바꾼다: 같은 지점을 쓰는 다른 장치가 있으면 이 장치를 새 지점으로 분리해 저장하고,
+    다른 장치와 지난 사건 기록은 원래 지점 그대로 둔다."""
     b = await read_json(request)
     loc = valid_location(b.get("location"))
     if b.get("location") is not None and loc is None:
@@ -1445,17 +1459,37 @@ async def update_site(site_id: str, request: Request, user: str = Depends(dashbo
         current = int(s.get("version") or 0)
         if b.get("base_version", current) != current:
             raise HTTPException(409, "다른 사용자가 지점 정보를 먼저 수정했습니다. 다시 불러오세요.")
+        only = str(b.get("only_device") or "").strip()
+        sharing = [r["device_id"] for r in conn.execute("SELECT device_id FROM devices WHERE json_extract(data,'$.site_id')=?", (site_id,))]
+        if only and only not in sharing:
+            raise HTTPException(422, "이 장치는 해당 지점에 속해 있지 않습니다. 화면을 새로 고쳐 주세요.")
+        split = bool(only) and len(sharing) > 1
+        if split:
+            # 젯슨은 site_version 이 로컬보다 클 때만 받아 가므로, 이 장치가 이미 가진 버전보다 크게 시작한다.
+            r = conn.execute("SELECT applied_version FROM device_site_applied WHERE device_id=?", (only,)).fetchone()
+            current = max(current, (r["applied_version"] or 0) if r else 0)
+            s = {**s, "site_id": new_site_id(conn, site_id), "created_at": iso(now_utc()), "split_from": site_id}
         s.update({"name": name[:60], "address": str(b.get("address") or "").strip()[:200], "location": loc,
                   "location_source": b.get("location_source") if b.get("location_source") in ("address", "gps", "manual", "map", "device") else "manual",
                   "version": current + 1, "updated_at": iso(now_utc()), "updated_by": user})
         if isinstance(b.get("region"), dict):
             s["region"] = {k: str(v)[:40] for k, v in b["region"].items() if k in ("sido", "sigungu", "dong", "code")}
-        conn.execute("UPDATE sites SET data=? WHERE site_id=?", (json.dumps(s, ensure_ascii=False), site_id))
-        devs = [r["device_id"] for r in conn.execute("SELECT device_id FROM devices WHERE json_extract(data,'$.site_id')=?", (site_id,))]
-        summaries = {d: site_summary(conn, d, site_id) for d in devs}
+        if split:
+            conn.execute("INSERT INTO sites(site_id, data) VALUES (?, ?)", (s["site_id"], json.dumps(s, ensure_ascii=False)))
+            row = conn.execute("SELECT data FROM devices WHERE device_id=?", (only,)).fetchone()
+            d = json.loads(row["data"])
+            d["site_id"] = s["site_id"]
+            conn.execute("UPDATE devices SET data=? WHERE device_id=?", (json.dumps(d, ensure_ascii=False), only))
+            conn.execute("INSERT INTO device_site_applied(device_id, applied_version, apply_error) VALUES (?,0,NULL) "
+                         "ON CONFLICT(device_id) DO UPDATE SET applied_version=0, applied_at=NULL, apply_error=NULL", (only,))
+            devs = [only]
+        else:
+            conn.execute("UPDATE sites SET data=? WHERE site_id=?", (json.dumps(s, ensure_ascii=False), site_id))
+            devs = sharing
+        summaries = {d: site_summary(conn, d, s["site_id"]) for d in devs}
     for d, summ in summaries.items():
         hub.publish("device_config", {"device_id": d, "kind": "site", **summ})
-    return {**s, "devices": summaries}
+    return {**s, "devices": summaries, "split_from": site_id if split else None}
 
 
 # ---------------------------------------------------------------- 주소 ↔ 좌표 (OpenStreetMap Nominatim, 서버에서 대신 호출·캐시)

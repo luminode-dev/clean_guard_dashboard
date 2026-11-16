@@ -70,3 +70,18 @@ test('chip editor: templates chips cannot show fall back to code view',()=>{
  assert.equal(templateToParts('{장소}에 버리지 마세요'),null,'bare place would change meaning when empty');
  assert.ok(templateToParts('{종류}를 버리지 마세요'));
 });
+
+test('demo mode: changing one device location splits it off the shared site',async()=>{
+ const values=new Map(),storage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};
+ const api=createDemoApi({storage}).request;
+ const [d1]=await api('/api/devices');
+ await api('/api/devices',{method:'POST',body:JSON.stringify({device_id:'JT-TEST-2',name:'같은 지점 2호기',site_id:d1.site_id})});
+ const before=(await api('/api/sites')).find(s=>s.site_id===d1.site_id);
+ const saved=await api('/api/sites/'+d1.site_id,{method:'PUT',body:JSON.stringify({base_version:before.version||0,name:'정문 앞',address:'',location:{lat:37.5,lng:127},only_device:'JT-TEST-2'})});
+ assert.equal(saved.split_from,d1.site_id);assert.notEqual(saved.site_id,d1.site_id);
+ const devs=await api('/api/devices');
+ assert.equal(devs.find(d=>d.device_id==='JT-TEST-2').site.name,'정문 앞');
+ assert.equal(devs.find(d=>d.device_id===d1.device_id).site.name,before.name,'other device keeps the old location');
+ const alone=await api('/api/sites/'+d1.site_id,{method:'PUT',body:JSON.stringify({base_version:before.version||0,name:'혼자 쓰는 지점',only_device:d1.device_id})});
+ assert.equal(alone.split_from,null);assert.equal(alone.site_id,d1.site_id,'no split when nobody else shares the site');
+});

@@ -1,11 +1,11 @@
-import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202611161239';
-import {LivePlayer} from './live.js?v=202611161239';
-import {createDemoApi} from './demo-api.js?v=202611161239';
-import {createServerApi} from './server-api.js?v=202611161239';
-import {connectEvents} from './realtime.js?v=202611161239';
-import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202611161239';
-import {mountSitePanel} from './site-panel.js?v=202611161239';
-import {mountAnnouncePanel} from './announce.js?v=202611161239';
+import {$,esc,icon,hydrateIcons,badge,labels,fmtDate,pct,localDay,empty,metric,hourChart,classBars,eventTable,alertCards} from './ui.js?v=202611161251';
+import {LivePlayer} from './live.js?v=202611161251';
+import {createDemoApi} from './demo-api.js?v=202611161251';
+import {createServerApi} from './server-api.js?v=202611161251';
+import {connectEvents} from './realtime.js?v=202611161251';
+import {RoiEditor,validateZones,ZONE_TYPES,selfIntersects} from './roi-editor.js?v=202611161251';
+import {mountSitePanel} from './site-panel.js?v=202611161251';
+import {mountAnnouncePanel} from './announce.js?v=202611161251';
 const config=window.CLEAN_GUARD_CONFIG||{};
 const demo=createDemoApi({storage:window.localStorage});
 const serverApi=createServerApi({config,storage:window.localStorage});
@@ -151,7 +151,10 @@ async function openDevice(id){
 
  roiDoc=roi;roiDeviceId=id;deviceDialogId=id;renderRoiSection();attachRoi();
  announcePanel=mountAnnouncePanel({box:$('#announce-section'),deviceId:id,api,toast,esc,fmtDate,demo:!serverMode});
- sitePanel=mountSitePanel({box:$('#site-section'),device:d,api,toast,esc,fmtDate,badge,demo:!serverMode,onSaved:site=>{const i=sites.findIndex(x=>x.site_id===site.site_id);if(i>=0)sites[i]={...sites[i],...site};devices.filter(x=>x.site_id===site.site_id).forEach(x=>x.site={...x.site,...site});$('#dialog-title').textContent=site.name||$('#dialog-title').textContent;}});
+ sitePanel=mountSitePanel({box:$('#site-section'),device:d,api,toast,esc,fmtDate,badge,demo:!serverMode,sharedWith:()=>devices.filter(x=>x.device_id!==d.device_id&&x.site_id===(d.site?.site_id||d.site_id)),onSaved:(site,{splitFrom}={})=>{const i=sites.findIndex(x=>x.site_id===site.site_id);if(i>=0)sites[i]={...sites[i],...site};else sites.push(site);
+  if(splitFrom)[d,devices.find(x=>x.device_id===d.device_id)].forEach(x=>{if(x){x.site_id=site.site_id;x.site=site;}});
+  else devices.filter(x=>x.site_id===site.site_id).forEach(x=>x.site={...x.site,...site});
+  $('#dialog-title').textContent=site.name||$('#dialog-title').textContent;}});
  if(s.live)$('#start-live').onclick=()=>{livePlayer?.close();$('#device-evidence').innerHTML='<video id="live-video" controls autoplay muted playsinline></video>';livePlayer=new LivePlayer($('#live-video'),$('#live-message'),{onState:st=>{const b=$('#start-live');if(!b)return;b.disabled=st==='playing'||st==='connecting';if(st==='ended'||st==='stalled')b.textContent='라이브 다시 연결';}});livePlayer.start(s.live);$('#start-live').disabled=true;clearInterval(thumbnailTimer);attachRoi();};
  const img=$('#detail-thumb');if(img)img.onerror=()=>{img.parentElement.innerHTML=icon('camera')+'<p>썸네일을 불러올 수 없습니다.</p>';};
  thumbnailTimer=setInterval(async()=>{try{const next=await api('/api/devices/'+id+'/stream');const image=$('#detail-thumb');if(image&&next.thumbnail?.url)image.src=next.thumbnail.url+'?v='+encodeURIComponent(next.ts);}catch{}},5000);
